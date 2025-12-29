@@ -1,0 +1,172 @@
+.workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.workspace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e9e9e7;
+  background: #ffffff;
+  min-height: 45px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #37352f;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9b9a97;
+  transition: background-color 0.2s ease;
+}
+
+.status-indicator[data-status='recording'] .status-dot {
+  background: #4caf50;
+  animation: pulse 2s infinite;
+}
+
+.status-indicator[data-status='paused'] .status-dot {
+  background: #ff9800;
+}
+
+.status-indicator[data-status='processing'] .status-dot {
+  background: #9c27b0;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.status-text {
+  font-weight: 500;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recording-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #e9e9e7;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #37352f;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.control-btn:hover:not(:disabled) {
+  background: rgba(55, 53, 47, 0.08);
+  border-color: rgba(55, 53, 47, 0.2);
+}
+
+.control-btn:active:not(:disabled) {
+  background: rgba(55, 53, 47, 0.12);
+}
+
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.control-btn-start {
+  background: #4caf50;
+  color: #ffffff;
+  border-color: #4caf50;
+}
+
+.control-btn-start:hover:not(:disabled) {
+  background: #45a049;
+  border-color: #45a049;
+}
+
+.control-btn-pause {
+  background: #ff9800;
+  color: #ffffff;
+  border-color: #ff9800;
+}
+
+.control-btn-pause:hover:not(:disabled) {
+  background: #e68900;
+  border-color: #e68900;
+}
+
+.control-btn-resume {
+  background: #2196f3;
+  color: #ffffff;
+  border-color: #2196f3;
+}
+
+.control-btn-resume:hover:not(:disabled) {
+  background: #1976d2;
+  border-color: #1976d2;
+}
+
+.control-btn-stop {
+  background: #f44336;
+  color: #ffffff;
+  border-color: #f44336;
+}
+
+.control-btn-stop:hover:not(:disabled) {
+  background: #d32f2f;
+  border-color: #d32f2f;
+}
+
+.control-btn-copy {
+  background: #ffffff;
+  color: #37352f;
+}
+
+.btn-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.btn-text {
+  font-size: 13px;
+}
+
+.workspace-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  background: #ffffff;
+}
+

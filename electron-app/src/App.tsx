@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { Workspace } from './components/Workspace';
+import { HistoryView } from './components/HistoryView';
+import { OperationTransformer, Operation } from './utils/operationTransform';
 import './App.css';
 
 // API配置 - 可以从Electron主进程获取
@@ -19,23 +23,26 @@ function App() {
   const [text, setText] = useState(''); // 显示缓冲区：显示给用户的文本
   const [error, setError] = useState<string | null>(null);
   const [apiConnected, setApiConnected] = useState(false);
-  const [activeTab, setActiveTab] = useState<'recording' | 'history'>('recording');
+  const [activeView, setActiveView] = useState<'workspace' | 'history' | 'settings'>('workspace');
   const [records, setRecords] = useState<Record[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
-  const [isUserEditing, setIsUserEditing] = useState(false);
   
   // 双缓冲机制
   const asrBufferRef = useRef<string>(''); // ASR缓冲区：存储ASR推送的原始文本
   const userEditBufferRef = useRef<string>(''); // 用户编辑缓冲区：存储用户编辑的文本
   const lastMergedAsrRef = useRef<string>(''); // 记录上次合并时的ASR文本，用于检测新增内容
   
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 操作转换系统
+  const operationHistoryRef = useRef<Operation[]>([]); // 操作历史
+  const lastAsrOperationsRef = useRef<Operation[]>([]); // 上次ASR的操作序列
+  const pendingAsrOperationsRef = useRef<Operation[]>([]); // 待应用的ASR操作
+  
   const isEditingRef = useRef(false); // 使用ref实时跟踪编辑状态，避免状态更新延迟
-  const cursorPositionRef = useRef<number | null>(null); // 保存光标位置
   const editingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null); // 同步用户编辑到后端的定时器
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const blockEditorRef = useRef<{ appendAsrText: (text: string) => void } | null>(null);
 
   // 检查API服务器连接
   const checkApiConnection = async () => {
@@ -84,6 +91,10 @@ function App() {
               asrBufferRef.current = initialText;
               userEditBufferRef.current = initialText;
               lastMergedAsrRef.current = initialText;
+              // 重置操作历史
+              operationHistoryRef.current = [];
+              pendingAsrOperationsRef.current = [];
+              lastAsrOperationsRef.current = [];
               break;
             case 'text_update':
               handleAsrTextUpdate(data.text);
@@ -186,7 +197,6 @@ function App() {
         // 停止编辑状态
         if (isEditingRef.current) {
           isEditingRef.current = false;
-          setIsUserEditing(false);
           if (editingTimeoutRef.current) {
             clearTimeout(editingTimeoutRef.current);
             editingTimeoutRef.current = null;
@@ -236,7 +246,10 @@ function App() {
       // 停止编辑状态，执行最终合并
       if (isEditingRef.current) {
         isEditingRef.current = false;
-        setIsUserEditing(false);
+        if (editingTimeoutRef.current) {
+          clearTimeout(editingTimeoutRef.current);
+          editingTimeoutRef.current = null;
+        }
         mergeAsrUpdates();
         // 等待合并完成
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -323,114 +336,191 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
       const data = await response.json();
       if (data.text) {
-        setText(data.text);
-        setActiveTab('recording');
+        const loadedText = data.text;
+        setText(loadedText);
+        // 重置缓冲区和操作历史
+        asrBufferRef.current = loadedText;
+        userEditBufferRef.current = loadedText;
+        lastMergedAsrRef.current = loadedText;
+        isEditingRef.current = false;
+        operationHistoryRef.current = [];
+        pendingAsrOperationsRef.current = [];
+        lastAsrOperationsRef.current = [];
+        setActiveView('workspace');
       }
     } catch (e) {
       setError(`加载记录失败: ${e}`);
     }
   };
 
-  useEffect(() => {
-    if (activeTab === 'history' && apiConnected) {
-      loadRecords();
-    }
-  }, [activeTab, apiConnected]);
-
-  // ASR更新处理 - 双缓冲机制
+  // ASR更新处理 - 使用操作转换系统
   const handleAsrTextUpdate = (asrText: string) => {
     // 1. 更新ASR缓冲区（始终更新，后端会自动保存）
+    const oldAsr = asrBufferRef.current;
     asrBufferRef.current = asrText;
 
-    // 2. 如果用户没有在编辑，直接同步到显示和用户编辑缓冲区
+    // 2. 将ASR文本变化转换为操作
+    const asrOperations = OperationTransformer.diffToOperations(oldAsr, asrText, 'asr');
+    
+    if (asrOperations.length === 0) {
+      return; // 没有变化
+    }
+
+    // 3. 如果用户没有在编辑，直接应用ASR操作
     if (!isEditingRef.current) {
-      setText(asrText);
-      userEditBufferRef.current = asrText;
-      lastMergedAsrRef.current = asrText;
-    } else {
-      // 3. 用户正在编辑时，ASR更新不干扰用户编辑
-      // ASR内容已经在后端保存了，前端保持用户编辑的内容和光标位置不变
-      // 但记录ASR的新内容，等待用户停止编辑时合并
-    }
-  };
-
-
-  // 处理用户输入
-  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    // 实时更新ref，确保ASR更新时能立即检测到编辑状态
-    isEditingRef.current = true;
-    setIsUserEditing(true);
-    
-    // 保存光标位置
-    cursorPositionRef.current = e.target.selectionStart;
-    
-    const userText = e.target.value;
-    
-    // 更新显示缓冲区和用户编辑缓冲区
-    setText(userText);
-    userEditBufferRef.current = userText;
-    
-    // 清除之前的定时器
-    if (editingTimeoutRef.current) {
-      clearTimeout(editingTimeoutRef.current);
-    }
-    if (syncTimeoutRef.current) {
-      clearTimeout(syncTimeoutRef.current);
-    }
-    
-    // 设置新的定时器：用户停止输入2秒后，标记为停止编辑并合并ASR新内容
-    editingTimeoutRef.current = setTimeout(() => {
-      isEditingRef.current = false;
-      setIsUserEditing(false);
-      cursorPositionRef.current = null;
-      editingTimeoutRef.current = null;
+      // 应用ASR操作到当前文档
+      let currentDoc = userEditBufferRef.current || text;
+      for (const op of asrOperations) {
+        const newDoc = OperationTransformer.applyOperation(currentDoc, op);
+        // 只有操作真正改变了文档时才记录
+        if (newDoc !== currentDoc) {
+          currentDoc = newDoc;
+          operationHistoryRef.current.push(op);
+        }
+      }
       
-      // 用户停止编辑后，合并ASR新内容
-      mergeAsrUpdates();
-    }, 2000);
-    
-    // 延迟同步用户编辑到后端（防抖）
-    syncTimeoutRef.current = setTimeout(() => {
-      syncUserEditToBackend(userText);
-    }, 1000);
+      // 更新显示和缓冲区
+      setText(currentDoc);
+      userEditBufferRef.current = currentDoc;
+      lastMergedAsrRef.current = asrText;
+      lastAsrOperationsRef.current = asrOperations;
+      
+      // 如果是追加操作，通过BlockEditor追加（保持光标位置）
+      if (asrOperations.length === 1 && asrOperations[0].type === 'insert' && blockEditorRef.current && state === 'recording') {
+        const op = asrOperations[0];
+        if (op.text && op.position >= currentDoc.length - op.text.length) {
+          // 追加操作，使用BlockEditor追加
+          blockEditorRef.current.appendAsrText(op.text);
+        }
+      }
+    } else {
+      // 4. 用户正在编辑时，保存ASR操作待合并
+      // 转换ASR操作，使其相对于用户操作之后的状态
+      const userOperations = operationHistoryRef.current.filter(op => op.author === 'user');
+      const transformedAsrOps = OperationTransformer.transformOperations(asrOperations, userOperations);
+      
+      // 过滤掉空操作（被跳过的操作）
+      const validOps = transformedAsrOps.filter(op => {
+        if (op.type === 'insert') return op.text && op.text.length > 0;
+        if (op.type === 'delete') return op.length && op.length > 0;
+        if (op.type === 'replace') return op.text && op.oldText;
+        return false;
+      });
+      
+      pendingAsrOperationsRef.current.push(...validOps);
+      lastAsrOperationsRef.current = asrOperations;
+    }
   };
-  
-  // 合并ASR更新到用户编辑缓冲区
-  const mergeAsrUpdates = () => {
-    const currentAsr = asrBufferRef.current;
-    const lastMerged = lastMergedAsrRef.current;
-    const userEdit = userEditBufferRef.current;
+
+  // 处理文本内容变化（来自 BlockEditor）
+  const handleTextChange = (newText: string) => {
+    const oldText = userEditBufferRef.current || text;
     
-    // 如果ASR和用户编辑相同，无需合并
-    if (currentAsr === userEdit) {
-      lastMergedAsrRef.current = currentAsr;
+    // 检查是否是用户编辑（通过比较当前文本和ASR缓冲区）
+    const currentAsr = asrBufferRef.current;
+    const isUserEdit = newText !== currentAsr;
+    
+    if (isUserEdit) {
+      // 用户编辑：将变化转换为操作
+      const userOperations = OperationTransformer.diffToOperations(oldText, newText, 'user');
+      
+      if (userOperations.length > 0) {
+        // 转换用户操作，使其相对于已应用的ASR操作之后的状态
+        const asrOps = operationHistoryRef.current.filter(op => op.author === 'asr');
+        const transformedUserOps = OperationTransformer.transformOperations(userOperations, asrOps);
+        
+        // 应用用户操作
+        let currentDoc = oldText;
+        for (const op of transformedUserOps) {
+          const newDoc = OperationTransformer.applyOperation(currentDoc, op);
+          // 只有操作真正改变了文档时才记录
+          if (newDoc !== currentDoc) {
+            currentDoc = newDoc;
+            operationHistoryRef.current.push(op);
+          }
+        }
+        
+        // 标记编辑状态并同步
+        isEditingRef.current = true;
+        setText(currentDoc);
+        userEditBufferRef.current = currentDoc;
+        
+        // 清除之前的定时器
+        if (editingTimeoutRef.current) {
+          clearTimeout(editingTimeoutRef.current);
+        }
+        if (syncTimeoutRef.current) {
+          clearTimeout(syncTimeoutRef.current);
+        }
+        
+        // 设置新的定时器：用户停止输入2秒后，标记为停止编辑并合并ASR新内容
+        editingTimeoutRef.current = setTimeout(() => {
+          isEditingRef.current = false;
+          editingTimeoutRef.current = null;
+          mergeAsrUpdates();
+        }, 2000);
+        
+        // 延迟同步用户编辑到后端（防抖）
+        syncTimeoutRef.current = setTimeout(() => {
+          syncUserEditToBackend(currentDoc);
+        }, 1000);
+      }
+    } else {
+      // ASR自动更新：只更新显示和缓冲区，不标记为用户编辑
+      // 这种情况发生在appendAsrText调用onContentChange时
+      setText(newText);
+      userEditBufferRef.current = newText;
+    }
+  };
+
+
+  // 合并ASR更新到用户编辑缓冲区 - 使用操作转换系统
+  const mergeAsrUpdates = () => {
+    const userEdit = userEditBufferRef.current || '';
+    const pendingOps = [...pendingAsrOperationsRef.current]; // 复制数组，避免修改原数组
+    
+    if (pendingOps.length === 0) {
+      // 没有待合并的ASR操作
+      lastMergedAsrRef.current = asrBufferRef.current;
       return;
     }
     
-    // 检测ASR是否有新内容（追加）
-    if (lastMerged && currentAsr.startsWith(lastMerged)) {
-      const newAsrContent = currentAsr.slice(lastMerged.length);
-      if (newAsrContent.length > 0) {
-        // ASR在末尾追加了新内容，追加到用户编辑文本的末尾
-        const mergedText = userEdit + newAsrContent;
-        setText(mergedText);
-        userEditBufferRef.current = mergedText;
-        lastMergedAsrRef.current = currentAsr;
-        
-        // 同步合并后的文本到后端
-        syncUserEditToBackend(mergedText);
-        return;
+    // 应用待合并的ASR操作
+    let mergedDoc = userEdit;
+    
+    // 获取所有用户操作（用于转换）
+    const allUserOps = operationHistoryRef.current.filter(o => o.author === 'user');
+    
+    // 按时间戳排序待合并的操作
+    const sortedOps = [...pendingOps].sort((a, b) => a.timestamp - b.timestamp);
+    
+    for (const op of sortedOps) {
+      // 转换操作，使其相对于当前文档状态正确
+      // 需要转换相对于所有已应用的用户操作
+      const transformedOp = OperationTransformer.transformOperations([op], allUserOps)[0];
+      
+      // 应用转换后的操作
+      const newDoc = OperationTransformer.applyOperation(mergedDoc, transformedOp);
+      
+      // 只有操作真正改变了文档时才记录
+      if (newDoc !== mergedDoc) {
+        mergedDoc = newDoc;
+        operationHistoryRef.current.push(transformedOp);
       }
     }
     
-    // ASR内容发生了其他变化（可能是修正），但用户已经编辑了
-    // 策略：保持用户编辑版本，因为用户已经做了修改
-    // 但更新lastMergedAsrRef，避免重复检测
-    if (currentAsr !== lastMerged) {
-      console.log('[合并] ASR内容变化，但保持用户编辑版本');
-      // 不更新lastMergedAsrRef，因为用户编辑版本可能与ASR不同
-      // 下次合并时，如果ASR追加了新内容，仍然可以合并
-    }
+    // 清空待合并操作
+    pendingAsrOperationsRef.current = [];
+    
+    // 更新显示和缓冲区
+    setText(mergedDoc);
+    userEditBufferRef.current = mergedDoc;
+    lastMergedAsrRef.current = asrBufferRef.current;
+    
+    // 同步合并后的文本到后端
+    syncUserEditToBackend(mergedDoc);
+    
+    console.log('[OT合并] 已合并ASR操作，文档长度:', mergedDoc.length, '操作数:', sortedOps.length);
   };
   
   // 同步用户编辑到后端（带防抖和去重）
@@ -460,241 +550,59 @@ function App() {
     }
   };
 
-  // 处理用户停止编辑（失去焦点）
-  const handleTextBlur = () => {
-    // 保存当前光标位置和用户编辑内容
-    if (textareaRef.current) {
-      cursorPositionRef.current = textareaRef.current.selectionStart;
-      const userText = textareaRef.current.value;
-      userEditBufferRef.current = userText;
-    }
-    
-    // 延迟标记为停止编辑，给用户时间继续输入
-    if (editingTimeoutRef.current) {
-      clearTimeout(editingTimeoutRef.current);
-    }
-    editingTimeoutRef.current = setTimeout(() => {
-      isEditingRef.current = false;
-      setIsUserEditing(false);
-      cursorPositionRef.current = null;
-      editingTimeoutRef.current = null;
-      
-      // 用户停止编辑后，合并ASR新内容
-      mergeAsrUpdates();
-    }, 500);
-  };
-
-  // 处理用户点击/选择文本（保存光标位置）
-  const handleTextSelect = () => {
-    if (textareaRef.current) {
-      isEditingRef.current = true;
-      setIsUserEditing(true);
-      cursorPositionRef.current = textareaRef.current.selectionStart;
-      
-      // 清除之前的定时器
-      if (editingTimeoutRef.current) {
-        clearTimeout(editingTimeoutRef.current);
-      }
-      
-      // 设置新的定时器
-      editingTimeoutRef.current = setTimeout(() => {
-        isEditingRef.current = false;
-        setIsUserEditing(false);
-        cursorPositionRef.current = null;
-        editingTimeoutRef.current = null;
-      }, 2000);
-    }
-  };
-
-  // 清理定时器
   useEffect(() => {
-    return () => {
-      if (editingTimeoutRef.current) {
-        clearTimeout(editingTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const getStatusText = () => {
-    if (!apiConnected) {
-      return '未连接';
+    if (activeView === 'history' && apiConnected) {
+      loadRecords();
     }
-    switch (state) {
-      case 'recording':
-        return '录音中...';
-      case 'paused':
-        return '已暂停';
-      case 'processing':
-        return '处理中...';
-      default:
-        return '就绪';
-    }
-  };
-
-  const getStatusColor = () => {
-    if (!apiConnected) {
-      return '#f44336';
-    }
-    switch (state) {
-      case 'recording':
-        return '#4CAF50';
-      case 'paused':
-        return '#ff9800';
-      case 'processing':
-        return '#9c27b0';
-      default:
-        return '#757575';
-    }
-  };
+  }, [activeView, apiConnected]);
 
   return (
     <div className="app">
-      <div className="header">
-        <h1>MindVoice</h1>
-        <div className="status" style={{ backgroundColor: getStatusColor() }}>
-          {getStatusText()}
-        </div>
-      </div>
-
-      <div className="tabs">
-        <button
-          className={activeTab === 'recording' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('recording')}
-        >
-          录音
-        </button>
-        <button
-          className={activeTab === 'history' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('history')}
-        >
-          历史记录
-        </button>
-      </div>
-
-      {error && (
-        <div className="error-message">
-          {error}
-        </div>
-      )}
-
-      {activeTab === 'recording' ? (
-        <>
-          <div className="text-display">
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={handleTextChange}
-              onBlur={handleTextBlur}
-              onSelect={handleTextSelect}
-              onKeyDown={() => {
-                // 用户按键时，确保标记为编辑状态
-                if (!isEditingRef.current) {
-                  isEditingRef.current = true;
-                  setIsUserEditing(true);
-                }
-              }}
-              placeholder={state === 'recording' ? '正在识别中...' : state === 'paused' ? '已暂停，点击恢复继续识别' : '点击"开始"按钮开始语音识别'}
-              className="text-area"
-              style={{ 
-                cursor: isUserEditing ? 'text' : 'default',
-                backgroundColor: isUserEditing ? '#fffef7' : '#ffffff'
-              }}
-            />
-            {isUserEditing && (
-              <div className="editing-indicator">
-                <span style={{ fontSize: '12px', color: '#ff9800' }}>✏️ 编辑中 - ASR持续记录中</span>
-              </div>
-            )}
+      <Sidebar activeView={activeView} onViewChange={setActiveView} />
+      
+      <div className="app-main">
+        {error && (
+          <div className="error-banner">
+            {error}
           </div>
+        )}
 
-          <div className="controls">
-            <button
-              onClick={startRecording}
-              disabled={!apiConnected || state === 'recording' || state === 'processing'}
-              className="btn btn-start"
-            >
-              开始
-            </button>
+        {activeView === 'workspace' && (
+          <Workspace
+            text={text}
+            onTextChange={handleTextChange}
+            isRecording={state === 'recording'}
+            isPaused={state === 'paused'}
+            onAsrTextUpdate={handleAsrTextUpdate}
+            onStartRecording={startRecording}
+            onPauseRecording={pauseRecording}
+            onResumeRecording={resumeRecording}
+            onStopRecording={stopRecording}
+            onCopyText={copyText}
+            apiConnected={apiConnected}
+            recordingState={state}
+            blockEditorRef={blockEditorRef}
+          />
+        )}
 
-            {state === 'recording' ? (
-              <button
-                onClick={pauseRecording}
-                disabled={!apiConnected}
-                className="btn btn-pause"
-              >
-                暂停
-              </button>
-            ) : state === 'paused' ? (
-              <button
-                onClick={resumeRecording}
-                disabled={!apiConnected}
-                className="btn btn-resume"
-              >
-                恢复
-              </button>
-            ) : null}
+        {activeView === 'history' && (
+          <HistoryView
+            records={records}
+            loading={loadingRecords}
+            onLoadRecord={loadRecord}
+            onDeleteRecord={deleteRecord}
+          />
+        )}
 
-            <button
-              onClick={stopRecording}
-              disabled={!apiConnected || state === 'idle' || state === 'processing'}
-              className="btn btn-stop"
-            >
-              停止
-            </button>
-
-            <button
-              onClick={copyText}
-              disabled={!text}
-              className="btn btn-copy"
-            >
-              复制
-            </button>
+        {activeView === 'settings' && (
+          <div className="settings-view">
+            <div className="settings-content">
+              <h2>设置</h2>
+              <p>设置功能开发中...</p>
+            </div>
           </div>
-        </>
-      ) : (
-        <div className="history-panel">
-          {loadingRecords ? (
-            <div className="loading">加载中...</div>
-          ) : records.length === 0 ? (
-            <div className="empty-state">
-              <div style={{ fontSize: '48px', marginBottom: '12px', opacity: 0.3 }}>📝</div>
-              <div>暂无历史记录</div>
-              <div style={{ fontSize: '12px', marginTop: '8px', color: '#bbb' }}>开始录音后，记录将自动保存</div>
-            </div>
-          ) : (
-            <div className="records-list">
-              {records.map((record) => (
-                <div key={record.id} className="record-item">
-                  <div className="record-header">
-                    <span className="record-date">
-                      {new Date(record.created_at).toLocaleString('zh-CN')}
-                    </span>
-                    <div className="record-actions">
-                      <button
-                        className="btn-small btn-load"
-                        onClick={() => loadRecord(record.id)}
-                      >
-                        查看
-                      </button>
-                      <button
-                        className="btn-small btn-delete"
-                        onClick={() => deleteRecord(record.id)}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                  <div className="record-text">
-                    {record.text.length > 100
-                      ? `${record.text.substring(0, 100)}...`
-                      : record.text || '(空)'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

@@ -1,10 +1,10 @@
 /* 全局样式 */
 .app {
   display: flex;
-  flex-direction: column;
   height: 100vh;
-  padding: 0;
-  background: #fafafa;
+  width: 100vw;
+  overflow: hidden;
+  background: #ffffff;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -12,344 +12,43 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 头部 */
-.header {
+.app-main {
+  flex: 1;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  background: #ffffff;
-  border-bottom: 1px solid #e8e8e8;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
 }
 
-.header h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a1a1a;
-  letter-spacing: -0.3px;
-}
-
-.status {
-  padding: 6px 14px;
-  background: #2196F3;
-  color: white;
-  border-radius: 16px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
-  box-shadow: 0 1px 3px rgba(33, 150, 243, 0.2);
-}
-
-/* 错误消息 */
-.error-message {
-  padding: 12px 20px;
+/* 错误横幅 */
+.error-banner {
+  padding: 12px 16px;
   background: #fff3f3;
   color: #c62828;
-  border-radius: 0;
-  margin: 0;
+  border-bottom: 1px solid #ffcdd2;
   font-size: 13px;
-  border-left: 3px solid #f44336;
-}
-
-/* 标签页 */
-.tabs {
-  display: flex;
-  gap: 0;
-  margin: 0;
-  background: #ffffff;
-  border-bottom: 1px solid #e8e8e8;
-  padding: 0 24px;
-}
-
-.tab {
-  padding: 14px 20px;
-  border: none;
-  background: none;
-  color: #666;
-  font-size: 14px;
   font-weight: 500;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: all 0.2s ease;
-  position: relative;
 }
 
-.tab:hover {
-  color: #2196F3;
-  background: #f8f9fa;
-}
-
-.tab.active {
-  color: #2196F3;
-  border-bottom-color: #2196F3;
-}
-
-/* 内容区域 */
-.text-display {
-  flex: 1;
-  margin: 0;
-  padding: 24px;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-.editing-indicator {
-  position: absolute;
-  top: 32px;
-  right: 32px;
-  padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 4px;
-  font-size: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  z-index: 10;
-}
-
-.text-area {
-  width: 100%;
-  flex: 1;
-  padding: 20px;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  font-size: 15px;
-  line-height: 1.7;
-  background: #ffffff;
-  resize: none;
-  font-family: inherit;
-  box-sizing: border-box;
-  color: #1a1a1a;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.text-area:focus {
-  outline: none;
-  border-color: #2196F3;
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.08);
-}
-
-.text-area::placeholder {
-  color: #999;
-}
-
-/* 控制按钮 */
-.controls {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  padding: 20px 24px;
-  background: #ffffff;
-  border-top: 1px solid #e8e8e8;
-  flex-wrap: wrap;
-}
-
-.btn {
-  padding: 10px 20px;
-  border: none;
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 80px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-.btn-start {
-  background: #4CAF50;
-  color: white;
-}
-
-.btn-start:hover:not(:disabled) {
-  background: #45a049;
-  box-shadow: 0 2px 4px rgba(76, 175, 80, 0.2);
-  transform: translateY(-1px);
-}
-
-.btn-pause {
-  background: #ff9800;
-  color: white;
-}
-
-.btn-pause:hover:not(:disabled) {
-  background: #e68900;
-  box-shadow: 0 2px 4px rgba(255, 152, 0, 0.2);
-  transform: translateY(-1px);
-}
-
-.btn-resume {
-  background: #2196F3;
-  color: white;
-}
-
-.btn-resume:hover:not(:disabled) {
-  background: #1976d2;
-  box-shadow: 0 2px 4px rgba(33, 150, 243, 0.2);
-  transform: translateY(-1px);
-}
-
-.btn-stop {
-  background: #f44336;
-  color: white;
-}
-
-.btn-stop:hover:not(:disabled) {
-  background: #d32f2f;
-  box-shadow: 0 2px 4px rgba(244, 67, 54, 0.2);
-  transform: translateY(-1px);
-}
-
-.btn-copy {
-  background: #ffffff;
-  color: #2196F3;
-  border: 1px solid #e0e0e0;
-}
-
-.btn-copy:hover:not(:disabled) {
-  background: #f5f5f5;
-  border-color: #2196F3;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-  transform: translateY(-1px);
-}
-
-/* 历史记录面板 */
-.history-panel {
+/* 设置视图 */
+.settings-view {
   flex: 1;
   overflow-y: auto;
-  min-height: 0;
-  padding: 24px;
-  background: #fafafa;
-}
-
-.history-panel::-webkit-scrollbar {
-  width: 8px;
-}
-
-.history-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.history-panel::-webkit-scrollbar-thumb {
-  background: #d0d0d0;
-  border-radius: 4px;
-}
-
-.history-panel::-webkit-scrollbar-thumb:hover {
-  background: #b0b0b0;
-}
-
-.loading,
-.empty-state {
-  text-align: center;
-  padding: 60px 20px;
-  color: #999;
-  font-size: 14px;
-}
-
-.empty-state {
-  color: #bbb;
-}
-
-/* 记录列表 */
-.records-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 100%;
-}
-
-.record-item {
   background: #ffffff;
-  border: 1px solid #e8e8e8;
-  border-radius: 8px;
-  padding: 18px 20px;
-  transition: all 0.2s ease;
-  cursor: pointer;
+  padding: 96px 96px;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
-.record-item:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  border-color: #d0d0d0;
-  transform: translateY(-1px);
+.settings-content h2 {
+  font-size: 30px;
+  font-weight: 700;
+  color: #37352f;
+  margin-bottom: 16px;
 }
 
-.record-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.record-date {
-  font-size: 12px;
-  color: #999;
-  font-weight: 500;
-  letter-spacing: 0.2px;
-}
-
-.record-actions {
-  display: flex;
-  gap: 6px;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.record-item:hover .record-actions {
-  opacity: 1;
-}
-
-.btn-small {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.btn-load {
-  background: #2196F3;
-  color: white;
-}
-
-.btn-load:hover {
-  background: #1976d2;
-  box-shadow: 0 2px 4px rgba(33, 150, 243, 0.2);
-}
-
-.btn-delete {
-  background: #ffffff;
-  color: #f44336;
-  border: 1px solid #e0e0e0;
-}
-
-.btn-delete:hover {
-  background: #fff3f3;
-  border-color: #f44336;
-  box-shadow: 0 2px 4px rgba(244, 67, 54, 0.1);
-}
-
-.record-text {
-  font-size: 14px;
-  color: #333;
-  line-height: 1.6;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.settings-content p {
+  font-size: 16px;
+  color: #9b9a97;
+  line-height: 1.5;
 }
