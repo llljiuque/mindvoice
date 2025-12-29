@@ -63,6 +63,11 @@ class StartRecordingResponse(BaseModel):
     message: str
 
 
+class StopRecordingRequest(BaseModel):
+    """停止录音请求"""
+    user_edited_text: Optional[str] = None  # 用户编辑后的文本
+
+
 class StopRecordingResponse(BaseModel):
     """停止录音响应"""
     success: bool
@@ -342,18 +347,67 @@ async def resume_recording():
 
 
 @app.post("/api/recording/stop", response_model=StopRecordingResponse)
-async def stop_recording():
+async def stop_recording(request: StopRecordingRequest = StopRecordingRequest()):
     """停止录音"""
     if not voice_service:
         raise HTTPException(status_code=503, detail="语音服务未初始化")
     
     try:
+        # 保存会话ID（停止录音后会重置）
+        session_id = getattr(voice_service, '_current_session_id', None)
+        
         # 停止录音，获取ASR最终文本
         final_asr_text = voice_service.stop_recording()
         
-        # 注意：这里返回的是ASR的最终文本
-        # 如果前端有用户编辑版本，前端会在停止时同步用户编辑版本
-        # 后端会保存ASR原始版本，用户编辑版本通过sync-edit接口保存
+        # 确定要保存的最终文本：优先使用用户编辑版本
+        final_text_to_save = request.user_edited_text if request.user_edited_text else final_asr_text
+        
+        # 保存最终记录到历史记录
+        if final_text_to_save and voice_service.storage_provider:
+            language = voice_service.config.get('asr.language', 'zh-CN')
+            
+            if session_id and request.user_edited_text:
+                # 如果有会话记录且用户编辑了文本，更新会话记录为用户编辑版本
+                metadata = {
+                    'language': language,
+                    'provider': 'volcano',
+                    'session_id': session_id,
+                    'is_session': True,
+                    'user_edited': True,
+                    'asr_text': final_asr_text,
+                    'updated_at': voice_service._get_timestamp()
+                }
+                if hasattr(voice_service.storage_provider, 'update_record'):
+                    success = voice_service.storage_provider.update_record(session_id, request.user_edited_text, metadata)
+                    if success:
+                        logger.info(f"[API] 已更新会话记录为用户编辑版本: {session_id}")
+                    else:
+                        # 更新失败，创建新记录
+                        metadata.pop('session_id', None)
+                        metadata.pop('is_session', None)
+                        record_id = voice_service.storage_provider.save_record(final_text_to_save, metadata)
+                        logger.info(f"[API] 更新会话记录失败，已创建新记录: {record_id}")
+                else:
+                    # 不支持更新，创建新记录
+                    metadata = {
+                        'language': language,
+                        'provider': 'volcano',
+                        'user_edited': True,
+                        'asr_text': final_asr_text
+                    }
+                    record_id = voice_service.storage_provider.save_record(final_text_to_save, metadata)
+                    logger.info(f"[API] 已保存最终记录到历史: {record_id}, 用户编辑: True")
+            else:
+                # 没有会话记录或没有用户编辑，创建新记录
+                metadata = {
+                    'language': language,
+                    'provider': 'volcano',
+                    'user_edited': bool(request.user_edited_text),
+                    'asr_text': final_asr_text if request.user_edited_text else None
+                }
+                record_id = voice_service.storage_provider.save_record(final_text_to_save, metadata)
+                logger.info(f"[API] 已保存最终记录到历史: {record_id}, 用户编辑: {bool(request.user_edited_text)}")
+        
         return StopRecordingResponse(
             success=True,
             final_text=final_asr_text,

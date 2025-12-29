@@ -235,14 +235,6 @@ function App() {
 
   const stopRecording = async () => {
     try {
-      // 停止录音前，先保存用户编辑的版本（如果有）
-      if (isEditingRef.current || userEditBufferRef.current !== asrBufferRef.current) {
-        // 用户正在编辑或编辑过，先同步用户编辑版本
-        await syncUserEditToBackend(userEditBufferRef.current);
-        // 等待同步完成
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      
       // 停止编辑状态，执行最终合并
       if (isEditingRef.current) {
         isEditingRef.current = false;
@@ -255,13 +247,34 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 300));
       }
       
+      // 获取最终的用户编辑文本（如果有），用于保存历史记录
+      const finalUserEditedText = userEditBufferRef.current && 
+                                  userEditBufferRef.current !== asrBufferRef.current
+                                  ? userEditBufferRef.current 
+                                  : null;
+      
+      // 停止录音前，先保存用户编辑的版本（如果有）
+      if (finalUserEditedText) {
+        // 用户编辑过，先同步用户编辑版本
+        await syncUserEditToBackend(finalUserEditedText);
+        // 等待同步完成
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+      // 停止录音，传递用户编辑的文本用于保存历史记录
       const response = await fetch(`${API_BASE_URL}/api/recording/stop`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_edited_text: finalUserEditedText || null
+        }),
       });
       const data = await response.json();
       
       // 停止录音后，使用用户编辑版本（如果有），否则使用ASR最终版本
-      const finalText = userEditBufferRef.current || data.final_text || '';
+      const finalText = finalUserEditedText || data.final_text || '';
       if (finalText) {
         setText(finalText);
         userEditBufferRef.current = finalText;
