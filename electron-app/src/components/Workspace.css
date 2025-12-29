@@ -2,7 +2,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--color-bg-primary);
   overflow: hidden;
 }
 
@@ -10,165 +10,333 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  border-bottom: 1px solid #e9e9e7;
-  background: #ffffff;
-  min-height: 45px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  min-height: 64px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(10px);
 }
 
 .header-left {
   display: flex;
   align-items: center;
+  gap: 16px;
+}
+
+.status-group {
+  display: flex;
+  align-items: center;
   gap: 12px;
+}
+
+.status-indicator-asr {
+  font-size: 13px;
+  padding: 6px 12px;
+  opacity: 0.85;
 }
 
 .status-indicator {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #37352f;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  padding: 8px 14px;
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-light);
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: #9b9a97;
-  transition: background-color 0.2s ease;
+  background: var(--color-text-tertiary);
+  transition: all var(--transition-base);
+  box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
 }
 
 .status-indicator[data-status='recording'] .status-dot {
-  background: #4caf50;
-  animation: pulse 2s infinite;
+  background: var(--color-success);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+  animation: pulse-dot 2s infinite;
 }
 
 .status-indicator[data-status='paused'] .status-dot {
-  background: #ff9800;
+  background: var(--color-warning);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2);
 }
 
 .status-indicator[data-status='processing'] .status-dot {
-  background: #9c27b0;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2);
+  animation: pulse-dot 1.5s infinite;
 }
 
-@keyframes pulse {
+@keyframes pulse-dot {
   0%, 100% {
+    transform: scale(1);
     opacity: 1;
   }
   50% {
-    opacity: 0.5;
+    transform: scale(1.1);
+    opacity: 0.8;
   }
 }
 
 .status-text {
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.pending-asr-indicator {
+  margin-left: 8px;
+  font-size: 16px;
+  animation: pulse-indicator 2s infinite;
+  cursor: help;
+}
+
+@keyframes pulse-indicator {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .recording-controls {
   display: flex;
-  gap: 6px;
+  gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 按钮分组 */
+.primary-actions,
+.secondary-actions,
+.tool-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 分组之间的分隔线 */
+.secondary-actions::before {
+  content: '';
+  width: 1px;
+  height: 24px;
+  background: var(--color-border);
+  margin-right: 4px;
+  margin-left: -4px;
+}
+
+.tool-actions::before {
+  content: '';
+  width: 1px;
+  height: 24px;
+  background: var(--color-border);
+  margin-right: 4px;
+  margin-left: -4px;
 }
 
 .control-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid #e9e9e7;
-  border-radius: 4px;
-  background: #ffffff;
-  color: #37352f;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 8px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.1s ease;
+  transition: all var(--transition-base);
+  box-shadow: var(--shadow-sm);
+  letter-spacing: 0.3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.control-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.control-btn:hover:not(:disabled)::before {
+  width: 300px;
+  height: 300px;
 }
 
 .control-btn:hover:not(:disabled) {
-  background: rgba(55, 53, 47, 0.08);
-  border-color: rgba(55, 53, 47, 0.2);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
 }
 
 .control-btn:active:not(:disabled) {
-  background: rgba(55, 53, 47, 0.12);
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
 }
 
 .control-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
+  transform: none !important;
 }
 
+/* 主操作按钮样式 */
+.control-btn-primary {
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 700;
+  min-width: 140px;
+}
+
+.control-btn-primary.control-btn-start {
+  background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.control-btn-primary.control-btn-start:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-success-hover) 0%, #047857 100%);
+}
+
+.control-btn-primary.control-btn-stop {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  color: var(--color-text-inverse);
+}
+
+.control-btn-primary.control-btn-stop:hover:not(:disabled) {
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+}
+
+/* 辅助操作按钮样式 */
+.control-btn-secondary {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+
+.control-btn-secondary.control-btn-pause {
+  background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.control-btn-secondary.control-btn-pause:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-warning-hover) 0%, #b45309 100%);
+}
+
+.control-btn-secondary.control-btn-resume {
+  background: linear-gradient(135deg, var(--color-info) 0%, var(--color-info-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.control-btn-secondary.control-btn-resume:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-info-hover) 0%, #1d4ed8 100%);
+}
+
+/* 工具按钮样式 */
+.control-btn-tool {
+  padding: 10px 16px;
+  font-size: 14px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+.control-btn-tool:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-dark);
+}
+
+/* 保留原有的控制按钮样式以兼容 */
 .control-btn-start {
-  background: #4caf50;
-  color: #ffffff;
-  border-color: #4caf50;
+  background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+  color: var(--color-text-inverse);
 }
 
 .control-btn-start:hover:not(:disabled) {
-  background: #45a049;
-  border-color: #45a049;
+  background: linear-gradient(135deg, var(--color-success-hover) 0%, #047857 100%);
 }
 
 .control-btn-pause {
-  background: #ff9800;
-  color: #ffffff;
-  border-color: #ff9800;
+  background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning-hover) 100%);
+  color: var(--color-text-inverse);
 }
 
 .control-btn-pause:hover:not(:disabled) {
-  background: #e68900;
-  border-color: #e68900;
+  background: linear-gradient(135deg, var(--color-warning-hover) 0%, #b45309 100%);
 }
 
 .control-btn-resume {
-  background: #2196f3;
-  color: #ffffff;
-  border-color: #2196f3;
+  background: linear-gradient(135deg, var(--color-info) 0%, var(--color-info-hover) 100%);
+  color: var(--color-text-inverse);
 }
 
 .control-btn-resume:hover:not(:disabled) {
-  background: #1976d2;
-  border-color: #1976d2;
+  background: linear-gradient(135deg, var(--color-info-hover) 0%, #1d4ed8 100%);
 }
 
 .control-btn-stop {
-  background: #f44336;
-  color: #ffffff;
-  border-color: #f44336;
+  background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
+  color: var(--color-text-inverse);
 }
 
 .control-btn-stop:hover:not(:disabled) {
-  background: #d32f2f;
-  border-color: #d32f2f;
+  background: linear-gradient(135deg, var(--color-danger-hover) 0%, #b91c1c 100%);
+}
+
+.control-btn-save {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: var(--color-text-inverse);
+}
+
+.control-btn-save:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
 }
 
 .control-btn-copy {
-  background: #ffffff;
-  color: #37352f;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+.control-btn-copy:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-dark);
 }
 
 .btn-icon {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
+  font-weight: 700;
 }
 
 .btn-text {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .workspace-content {
   flex: 1;
   overflow: hidden;
   position: relative;
-  background: #ffffff;
-  min-width: 0; /* 允许flex项目缩小 */
+  background: var(--color-bg-primary);
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }

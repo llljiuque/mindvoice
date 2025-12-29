@@ -33,6 +33,8 @@ export const Block: React.FC<BlockProps> = ({
   const [content, setContent] = useState(block.content);
   const contentRef = useRef<HTMLDivElement>(null);
   const cursorPositionRef = useRef<number | null>(null); // 保存光标在文本中的位置（字符偏移）
+  const isUserEditingRef = useRef(false); // 跟踪用户是否正在编辑
+  const lastSyncedContentRef = useRef<string>(block.content); // 记录上次同步到DOM的内容
 
   // 保存光标位置（相对于文本内容的字符位置）
   const saveCursorPosition = () => {
@@ -166,6 +168,13 @@ export const Block: React.FC<BlockProps> = ({
   useEffect(() => {
     // 只有当外部内容改变且与当前内容不同时才更新
     if (block.content !== content && contentRef.current) {
+      // 如果用户正在编辑，完全跳过更新，让浏览器自己管理
+      if (isUserEditingRef.current) {
+        // 只同步state，不更新DOM（避免干扰用户输入）
+        setContent(block.content);
+        return;
+      }
+      
       // 检查是否是用户正在编辑的块（有焦点且光标在块内）
       const selection = window.getSelection();
       const range = selection?.rangeCount > 0 ? selection.getRangeAt(0) : null;
@@ -174,44 +183,43 @@ export const Block: React.FC<BlockProps> = ({
                            range &&
                            contentRef.current.contains(range.commonAncestorContainer);
       
+      // 如果用户正在编辑，完全跳过DOM更新，避免打断用户输入
+      // ASR更新会在用户停止输入后通过applyPendingAsrOperations应用
       if (isUserEditing) {
-        // 用户正在编辑：保存光标位置（在内容更新前）
-        saveCursorPosition();
+        // 只同步state，不更新DOM（避免干扰用户输入）
+        setContent(block.content);
+        return;
       }
       
-      // 计算内容变化类型
-      const isAppend = block.content.startsWith(content);
-      const oldLength = content.length;
-      
-      setContent(block.content);
-      
-      if (isUserEditing) {
-        // 恢复光标位置（在内容更新后）
-        // 如果是追加内容，且用户光标在末尾，保持光标在末尾
-        // 否则恢复保存的光标位置
-        if (isAppend && cursorPositionRef.current !== null && cursorPositionRef.current >= oldLength) {
-          // 用户光标在末尾，追加后也保持在末尾
-          setTimeout(() => {
-            const selection = window.getSelection();
-            if (selection && contentRef.current) {
-              const range = document.createRange();
-              range.selectNodeContents(contentRef.current);
-              range.collapse(false);
-              selection.removeAllRanges();
-              selection.addRange(range);
-              cursorPositionRef.current = contentRef.current.textContent?.length || 0;
-            }
-          }, 0);
-        } else {
-          // 恢复保存的光标位置
+      // 非用户编辑时，更新DOM内容
+      const currentText = contentRef.current.textContent || '';
+      if (currentText !== block.content) {
+        // 保存光标位置（如果有）
+        saveCursorPosition();
+        
+        // 直接更新DOM，避免React重新渲染导致的问题
+        contentRef.current.textContent = block.content;
+        lastSyncedContentRef.current = block.content;
+        setContent(block.content);
+        
+        // 恢复光标位置（如果之前有保存）
+        if (cursorPositionRef.current !== null) {
           restoreCursorPosition();
         }
-      } else {
-        // 不是用户编辑的块，清除保存的光标位置
-        cursorPositionRef.current = null;
       }
     }
-  }, [block.content, isFocused]);
+  }, [block.content, isFocused, content]);
+  
+  // 初始化时设置内容
+  useEffect(() => {
+    if (contentRef.current) {
+      const currentText = contentRef.current.textContent || '';
+      if (currentText !== block.content && !isUserEditingRef.current) {
+        contentRef.current.textContent = block.content;
+        lastSyncedContentRef.current = block.content;
+      }
+    }
+  }, [block.content]);
 
   useEffect(() => {
     if (isFocused && contentRef.current) {
@@ -243,15 +251,23 @@ export const Block: React.FC<BlockProps> = ({
     const newContent = e.currentTarget.textContent || '';
     // 只有当内容真正改变时才更新，避免循环更新
     if (newContent !== content) {
-      // 用户输入时，保存光标位置（用于后续外部更新时恢复）
-      // 但不立即恢复，让浏览器自然处理光标位置
+      // 标记用户正在编辑
+      isUserEditingRef.current = true;
+      
+      // 保存光标位置（用户输入时）
       saveCursorPosition();
+      
+      // 更新同步内容ref
+      lastSyncedContentRef.current = newContent;
       
       setContent(newContent);
       onUpdate(block.id, newContent);
       
-      // 注意：用户输入时不需要恢复光标位置
-      // 浏览器会自动维护光标位置，我们只需要保存即可
+      // 延迟重置编辑状态，避免在快速输入时频繁更新
+      // 延长到500ms，给ASR延迟应用留出时间
+      setTimeout(() => {
+        isUserEditingRef.current = false;
+      }, 500);
     }
   };
 
@@ -298,16 +314,27 @@ export const Block: React.FC<BlockProps> = ({
       <Tag
         ref={contentRef}
         className={getClassName()}
-        contentEditable
+        contentEditable={true}
         suppressContentEditableWarning
         onInput={handleInput}
-        onFocus={() => onFocus(block.id)}
-        onBlur={onBlur}
+        onFocus={() => {
+          isUserEditingRef.current = false; // 重置编辑状态
+          onFocus(block.id);
+        }}
+        onBlur={() => {
+          isUserEditingRef.current = false; // 重置编辑状态
+          onBlur();
+        }}
         onKeyDown={handleKeyDown}
+        onPaste={(e) => {
+          e.preventDefault();
+          const text = e.clipboardData.getData('text/plain');
+          document.execCommand('insertText', false, text);
+        }}
         data-placeholder={getPlaceholder(block.type)}
-      >
-        {content}
-      </Tag>
+        spellCheck={false}
+        suppressHydrationWarning
+      />
     </div>
   );
 };

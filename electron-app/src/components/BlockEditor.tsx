@@ -12,6 +12,7 @@ interface BlockEditorProps {
 
 export interface BlockEditorHandle {
   appendAsrText: (text: string) => void;
+  insertAsrText: (text: string, position: number) => void;
 }
 
 export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
@@ -85,9 +86,80 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     });
   }, [isRecording, isPaused, onContentChange]);
 
+  // ASR 文本更新处理 - 在指定位置插入 ASR 文本（支持共享编辑）
+  const insertAsrText = useCallback((newText: string, position: number) => {
+    // 只有在录音且未暂停时才插入
+    if (!isRecording || isPaused || !newText) return;
+    
+    setBlocks((prev) => {
+      // 计算每个块的字符位置范围（包括换行符）
+      let currentPos = 0;
+      const blockRanges: Array<{ block: Block; start: number; end: number; index: number }> = [];
+      
+      for (let i = 0; i < prev.length; i++) {
+        const block = prev[i];
+        const blockStart = currentPos;
+        const blockEnd = currentPos + block.content.length;
+        blockRanges.push({ block, start: blockStart, end: blockEnd, index: i });
+        currentPos = blockEnd + 1; // +1 for newline
+      }
+      
+      // 找到插入位置所在的块
+      let targetBlockIndex = -1;
+      let insertOffset = 0;
+      
+      for (let i = 0; i < blockRanges.length; i++) {
+        const range = blockRanges[i];
+        if (position >= range.start && position <= range.end) {
+          // 在当前块内
+          targetBlockIndex = i;
+          insertOffset = position - range.start;
+          break;
+        } else if (position > range.end && (i === blockRanges.length - 1 || position < blockRanges[i + 1].start)) {
+          // 在当前块末尾和下一个块之间（换行符位置）
+          targetBlockIndex = i;
+          insertOffset = range.block.content.length;
+          break;
+        }
+      }
+      
+      // 如果位置超出文档末尾，追加到最后一个块
+      if (targetBlockIndex === -1) {
+        targetBlockIndex = prev.length - 1;
+        insertOffset = prev[prev.length - 1]?.content.length || 0;
+      }
+      
+      // 执行插入
+      const updated = [...prev];
+      const targetBlock = updated[targetBlockIndex];
+      
+      if (targetBlock) {
+        const before = targetBlock.content.slice(0, insertOffset);
+        const after = targetBlock.content.slice(insertOffset);
+        updated[targetBlockIndex] = {
+          ...targetBlock,
+          content: before + newText + after,
+        };
+      } else {
+        // 如果没有块，创建一个新块
+        updated.push({
+          id: `block-${Date.now()}`,
+          type: 'paragraph',
+          content: newText,
+        });
+      }
+      
+      const contentString = updated.map((b) => b.content).join('\n');
+      // 通知父组件内容变化（但不触发用户编辑标记）
+      onContentChange?.(contentString);
+      return updated;
+    });
+  }, [isRecording, isPaused, onContentChange]);
+
   // 暴露方法给父组件
   useImperativeHandle(ref, () => ({
     appendAsrText,
+    insertAsrText,
   }));
 
   function createEmptyBlock(): Block {

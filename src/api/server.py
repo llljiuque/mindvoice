@@ -467,6 +467,52 @@ async def sync_user_edit(request: SyncEditRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SaveTextRequest(BaseModel):
+    """直接保存文本请求"""
+    text: str
+
+
+class SaveTextResponse(BaseModel):
+    """直接保存文本响应"""
+    success: bool
+    record_id: Optional[str] = None
+    message: str
+
+
+@app.post("/api/text/save", response_model=SaveTextResponse)
+async def save_text_directly(request: SaveTextRequest):
+    """直接保存文本到历史记录（不依赖ASR会话）"""
+    if not voice_service or not voice_service.storage_provider:
+        raise HTTPException(status_code=503, detail="存储服务未初始化")
+    
+    try:
+        if not request.text or not request.text.strip():
+            return SaveTextResponse(
+                success=False,
+                message="文本内容为空"
+            )
+        
+        # 保存文本记录
+        metadata = {
+            'language': voice_service.config.get('asr.language', 'zh-CN'),
+            'provider': 'manual',  # 标记为手动输入
+            'input_method': 'keyboard',  # 输入方式：键盘
+            'created_at': voice_service._get_timestamp()
+        }
+        
+        record_id = voice_service.storage_provider.save_record(request.text, metadata)
+        logger.info(f"[API] 已直接保存文本记录: {record_id}")
+        
+        return SaveTextResponse(
+            success=True,
+            record_id=record_id,
+            message="文本已保存"
+        )
+    except Exception as e:
+        logger.error(f"直接保存文本失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/records", response_model=ListRecordsResponse)
 async def list_records(limit: int = 50, offset: int = 0):
     """列出历史记录"""

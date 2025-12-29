@@ -20,7 +20,9 @@ interface Record {
 }
 
 function App() {
-  const [state, setState] = useState<RecordingState>('idle');
+  // ASR状态（后台输入员的状态）
+  const [asrState, setAsrState] = useState<RecordingState>('idle');
+  
   const [text, setText] = useState(''); // 显示缓冲区：显示给用户的文本
   const [error, setError] = useState<string | null>(null);
   const [apiConnected, setApiConnected] = useState(false);
@@ -28,6 +30,7 @@ function App() {
   const [records, setRecords] = useState<Record[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [hasPendingAsr, setHasPendingAsr] = useState(false); // 是否有待处理的ASR输入
   
   // 双缓冲机制
   const asrBufferRef = useRef<string>(''); // ASR缓冲区：存储ASR推送的原始文本
@@ -44,7 +47,7 @@ function App() {
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null); // 同步用户编辑到后端的定时器
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const blockEditorRef = useRef<{ appendAsrText: (text: string) => void } | null>(null);
+  const blockEditorRef = useRef<{ appendAsrText: (text: string) => void; insertAsrText: (text: string, position: number) => void } | null>(null);
 
   // 检查API服务器连接
   const checkApiConnection = async () => {
@@ -87,7 +90,8 @@ function App() {
 
           switch (data.type) {
             case 'initial_state':
-              setState(data.state);
+              // ASR状态（后台输入员的状态）
+              setAsrState(data.state);
               const initialText = data.text || '';
               setText(initialText);
               asrBufferRef.current = initialText;
@@ -97,12 +101,14 @@ function App() {
               operationHistoryRef.current = [];
               pendingAsrOperationsRef.current = [];
               lastAsrOperationsRef.current = [];
+              setHasPendingAsr(false); // 重置待处理标记
               break;
             case 'text_update':
               handleAsrTextUpdate(data.text);
               break;
             case 'state_change':
-              setState(data.state);
+              // ASR状态变化（后台输入员的状态）
+              setAsrState(data.state);
               break;
             case 'error':
               setError(`${data.error_type}: ${data.message}`);
@@ -176,7 +182,13 @@ function App() {
     };
   }, []);
 
-  const startRecording = async () => {
+  // 启动ASR（后台输入员开始工作）
+  const startAsr = async () => {
+    if (!apiConnected) {
+      setError('API未连接，无法启动ASR');
+      return;
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/api/recording/start`, {
         method: 'POST',
@@ -186,13 +198,20 @@ function App() {
         setError(data.message);
       } else {
         setError(null);
+        // ASR状态会通过WebSocket更新
       }
     } catch (e) {
-      setError(`启动录音失败: ${e}`);
+      setError(`启动ASR失败: ${e}`);
     }
   };
 
-  const pauseRecording = async () => {
+  // 暂停ASR（后台输入员暂停）
+  const pauseAsr = async () => {
+    if (!apiConnected) {
+      setError('API未连接，无法暂停ASR');
+      return;
+    }
+    
     try {
       // 暂停前，如果有用户编辑，先同步
       if (isEditingRef.current || userEditBufferRef.current !== asrBufferRef.current) {
@@ -203,7 +222,6 @@ function App() {
             clearTimeout(editingTimeoutRef.current);
             editingTimeoutRef.current = null;
           }
-          mergeAsrUpdates();
         }
         // 同步用户编辑版本
         await syncUserEditToBackend(userEditBufferRef.current);
@@ -217,11 +235,17 @@ function App() {
         setError(data.message);
       }
     } catch (e) {
-      setError(`暂停录音失败: ${e}`);
+      setError(`暂停ASR失败: ${e}`);
     }
   };
 
-  const resumeRecording = async () => {
+  // 恢复ASR（后台输入员继续）
+  const resumeAsr = async () => {
+    if (!apiConnected) {
+      setError('API未连接，无法恢复ASR');
+      return;
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/api/recording/resume`, {
         method: 'POST',
@@ -231,63 +255,157 @@ function App() {
         setError(data.message);
       }
     } catch (e) {
-      setError(`恢复录音失败: ${e}`);
+      setError(`恢复ASR失败: ${e}`);
     }
   };
 
-  const stopRecording = async () => {
+  // 停止ASR（后台输入员停止）
+  const stopAsr = async () => {
+    if (!apiConnected) {
+      return;
+    }
+    
     try {
-      // 停止编辑状态，执行最终合并
-      if (isEditingRef.current) {
-        isEditingRef.current = false;
-        if (editingTimeoutRef.current) {
-          clearTimeout(editingTimeoutRef.current);
-          editingTimeoutRef.current = null;
-        }
-        mergeAsrUpdates();
-        // 等待合并完成
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      
-      // 获取最终的用户编辑文本（如果有），用于保存历史记录
-      const finalUserEditedText = userEditBufferRef.current && 
-                                  userEditBufferRef.current !== asrBufferRef.current
-                                  ? userEditBufferRef.current 
-                                  : null;
-      
-      // 停止录音前，先保存用户编辑的版本（如果有）
-      if (finalUserEditedText) {
-        // 用户编辑过，先同步用户编辑版本
-        await syncUserEditToBackend(finalUserEditedText);
-        // 等待同步完成
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      
-      // 停止录音，传递用户编辑的文本用于保存历史记录
       const response = await fetch(`${API_BASE_URL}/api/recording/stop`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          user_edited_text: finalUserEditedText || null
+          user_edited_text: null // 停止ASR时不保存
         }),
       });
       const data = await response.json();
-      
-      // 停止录音后，使用用户编辑版本（如果有），否则使用ASR最终版本
-      const finalText = finalUserEditedText || data.final_text || '';
-      if (finalText) {
-        setText(finalText);
-        userEditBufferRef.current = finalText;
-        asrBufferRef.current = data.final_text || finalText;
-      }
-      
       if (!data.success) {
         setError(data.message);
+      } else {
+        setToast({ message: 'ASR已停止', type: 'info' });
       }
     } catch (e) {
-      setError(`停止录音失败: ${e}`);
+      setError(`停止ASR失败: ${e}`);
+    }
+  };
+
+  // 保存（只有前端输入员可以操作）
+  const saveText = async () => {
+    try {
+      // 停止编辑状态
+      if (isEditingRef.current) {
+        isEditingRef.current = false;
+        if (editingTimeoutRef.current) {
+          clearTimeout(editingTimeoutRef.current);
+          editingTimeoutRef.current = null;
+        }
+        // 应用待处理的ASR操作
+        if (pendingAsrOperationsRef.current.length > 0) {
+          applyPendingAsrOperations();
+        }
+      }
+      
+      // 获取最终文本（包括ASR和键盘输入）
+      const finalText = userEditBufferRef.current || text || '';
+      
+      if (!finalText || !finalText.trim()) {
+        setToast({ 
+          message: '没有内容可保存', 
+          type: 'info' 
+        });
+        return;
+      }
+      
+      // 如果ASR正在运行，先停止ASR并保存
+      if (apiConnected && (asrState === 'recording' || asrState === 'paused')) {
+        try {
+          // 停止ASR，传递最终文本用于保存历史记录
+          const response = await fetch(`${API_BASE_URL}/api/recording/stop`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              user_edited_text: finalText
+            }),
+          });
+          const data = await response.json();
+          
+          if (data.success) {
+            // 使用最终文本（用户编辑版本优先）
+            const savedText = finalText || data.final_text || '';
+            if (savedText) {
+              setText(savedText);
+              userEditBufferRef.current = savedText;
+              asrBufferRef.current = data.final_text || savedText;
+            }
+            setToast({ 
+              message: '已保存到历史记录', 
+              type: 'success' 
+            });
+            setHasPendingAsr(false);
+          } else {
+            setError(data.message);
+          }
+        } catch (e) {
+          // ASR停止失败，但仍然保存文本
+          console.error('停止ASR失败:', e);
+          const saved = await saveTextDirectly(finalText);
+          if (saved) {
+            setToast({ 
+              message: '已保存到历史记录', 
+              type: 'success' 
+            });
+            setHasPendingAsr(false);
+          } else {
+            setToast({ 
+              message: '保存失败，请重试', 
+              type: 'error' 
+            });
+          }
+        }
+      } else {
+        // 没有ASR运行，直接保存文本
+        const saved = await saveTextDirectly(finalText);
+        if (saved) {
+          setToast({ 
+            message: '已保存到历史记录', 
+            type: 'success' 
+          });
+        } else {
+          setToast({ 
+            message: '保存失败，请重试', 
+            type: 'error' 
+          });
+        }
+      }
+    } catch (e) {
+      setError(`保存失败: ${e}`);
+    }
+  };
+
+  // 直接保存文本到历史记录（用于仅键盘输入的情况）
+  const saveTextDirectly = async (text: string) => {
+    if (!apiConnected || !text.trim()) {
+      return false;
+    }
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/text/save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text }),
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        return true;
+      } else {
+        console.warn('直接保存文本失败:', data.message);
+        return false;
+      }
+    } catch (e) {
+      console.warn('保存文本失败:', e);
+      return false;
     }
   };
 
@@ -302,6 +420,24 @@ function App() {
       setToast({ message: '文本已复制到剪贴板', type: 'success' });
     } catch (e) {
       setToast({ message: `复制失败: ${e}`, type: 'error' });
+    }
+  };
+
+  const clearText = () => {
+    if (!text) {
+      return;
+    }
+    
+    // 确认清空
+    if (window.confirm('确定要清空当前内容吗？此操作不可撤销。')) {
+      setText('');
+      asrBufferRef.current = '';
+      userEditBufferRef.current = '';
+      lastMergedAsrRef.current = '';
+      operationHistoryRef.current = [];
+      pendingAsrOperationsRef.current = [];
+      lastAsrOperationsRef.current = [];
+      setToast({ message: '内容已清空', type: 'info' });
     }
   };
 
@@ -360,6 +496,7 @@ function App() {
         operationHistoryRef.current = [];
         pendingAsrOperationsRef.current = [];
         lastAsrOperationsRef.current = [];
+        setHasPendingAsr(false); // 重置待处理标记
         setActiveView('workspace');
       }
     } catch (e) {
@@ -367,7 +504,7 @@ function App() {
     }
   };
 
-  // ASR更新处理 - 使用操作转换系统
+  // ASR更新处理 - 智能延迟，用户友好
   const handleAsrTextUpdate = (asrText: string) => {
     // 1. 更新ASR缓冲区（始终更新，后端会自动保存）
     const oldAsr = asrBufferRef.current;
@@ -380,40 +517,12 @@ function App() {
       return; // 没有变化
     }
 
-    // 3. 如果用户没有在编辑，直接应用ASR操作
-    if (!isEditingRef.current) {
-      // 应用ASR操作到当前文档
-      let currentDoc = userEditBufferRef.current || text;
-      for (const op of asrOperations) {
-        const newDoc = OperationTransformer.applyOperation(currentDoc, op);
-        // 只有操作真正改变了文档时才记录
-        if (newDoc !== currentDoc) {
-          currentDoc = newDoc;
-          operationHistoryRef.current.push(op);
-        }
-      }
-      
-      // 更新显示和缓冲区
-      setText(currentDoc);
-      userEditBufferRef.current = currentDoc;
-      lastMergedAsrRef.current = asrText;
-      lastAsrOperationsRef.current = asrOperations;
-      
-      // 如果是追加操作，通过BlockEditor追加（保持光标位置）
-      if (asrOperations.length === 1 && asrOperations[0].type === 'insert' && blockEditorRef.current && state === 'recording') {
-        const op = asrOperations[0];
-        if (op.text && op.position >= currentDoc.length - op.text.length) {
-          // 追加操作，使用BlockEditor追加
-          blockEditorRef.current.appendAsrText(op.text);
-        }
-      }
-    } else {
-      // 4. 用户正在编辑时，保存ASR操作待合并
-      // 转换ASR操作，使其相对于用户操作之后的状态
+    // 3. 智能延迟策略：如果用户正在输入，延迟应用ASR更新
+    if (isEditingRef.current) {
+      // 用户正在输入，将ASR操作保存到待处理队列
       const userOperations = operationHistoryRef.current.filter(op => op.author === 'user');
       const transformedAsrOps = OperationTransformer.transformOperations(asrOperations, userOperations);
       
-      // 过滤掉空操作（被跳过的操作）
       const validOps = transformedAsrOps.filter(op => {
         if (op.type === 'insert') return op.text && op.text.length > 0;
         if (op.type === 'delete') return op.length && op.length > 0;
@@ -421,12 +530,132 @@ function App() {
         return false;
       });
       
+      // 保存到待处理队列
       pendingAsrOperationsRef.current.push(...validOps);
       lastAsrOperationsRef.current = asrOperations;
+      setHasPendingAsr(true); // 标记有待处理的ASR输入
+      
+      // 清除之前的延迟应用定时器
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
+      
+      // 用户停止输入1.5秒后，应用待处理的ASR操作
+      syncTimeoutRef.current = setTimeout(() => {
+        applyPendingAsrOperations();
+      }, 1500);
+      
+      return;
+    }
+
+    // 4. 用户没有在输入，立即应用ASR操作
+    applyAsrOperationsImmediately(asrOperations);
+  };
+
+  // 立即应用ASR操作
+  const applyAsrOperationsImmediately = (asrOperations: Operation[]) => {
+    // 获取当前文档状态（包括用户编辑）
+    let currentDoc = userEditBufferRef.current || text;
+    
+    // 转换ASR操作，使其相对于已应用的用户操作之后的状态
+    const userOperations = operationHistoryRef.current.filter(op => op.author === 'user');
+    const transformedAsrOps = OperationTransformer.transformOperations(asrOperations, userOperations);
+    
+    // 过滤掉空操作（被跳过的操作）
+    const validOps = transformedAsrOps.filter(op => {
+      if (op.type === 'insert') return op.text && op.text.length > 0;
+      if (op.type === 'delete') return op.length && op.length > 0;
+      if (op.type === 'replace') return op.text && op.oldText;
+      return false;
+    });
+    
+    if (validOps.length === 0) {
+      return; // 没有有效操作
+    }
+    
+    // 应用转换后的ASR操作到当前文档
+    for (const op of validOps) {
+      const newDoc = OperationTransformer.applyOperation(currentDoc, op);
+      // 只有操作真正改变了文档时才记录
+      if (newDoc !== currentDoc) {
+        currentDoc = newDoc;
+        operationHistoryRef.current.push(op);
+      }
+    }
+    
+    // 更新显示和缓冲区
+    setText(currentDoc);
+    userEditBufferRef.current = currentDoc;
+    lastMergedAsrRef.current = asrBufferRef.current;
+    lastAsrOperationsRef.current = asrOperations;
+    
+    // 如果是追加操作，通过BlockEditor追加（保持光标位置）
+    if (validOps.length === 1 && validOps[0].type === 'insert' && blockEditorRef.current) {
+      const op = validOps[0];
+      if (op.text) {
+        // 检查是否是追加到文档末尾的操作
+        const expectedPosition = currentDoc.length - op.text.length;
+        if (op.position >= expectedPosition - 1) { // 允许1个字符的误差
+          // 追加操作，使用BlockEditor追加
+          blockEditorRef.current.appendAsrText(op.text);
+        } else {
+          // 中间插入操作，需要更智能的处理
+          blockEditorRef.current.insertAsrText(op.text, op.position);
+        }
+      }
+    } else if (validOps.length > 0 && blockEditorRef.current) {
+      // 多个操作，通过更新整个文档来处理
+      // BlockEditor会通过initialContent prop自动同步
     }
   };
 
-  // 处理文本内容变化（来自 BlockEditor）
+  // 应用待处理的ASR操作
+  const applyPendingAsrOperations = () => {
+    const pendingOps = [...pendingAsrOperationsRef.current];
+    if (pendingOps.length === 0) {
+      return;
+    }
+    
+    // 清空待处理队列
+    pendingAsrOperationsRef.current = [];
+    
+    // 获取当前文档状态
+    let currentDoc = userEditBufferRef.current || text;
+    
+    // 获取所有用户操作（用于转换）
+    const allUserOps = operationHistoryRef.current.filter(o => o.author === 'user');
+    
+    // 按时间戳排序待处理的操作
+    const sortedOps = [...pendingOps].sort((a, b) => a.timestamp - b.timestamp);
+    
+    // 应用每个待处理的操作
+    for (const op of sortedOps) {
+      // 转换操作，使其相对于当前文档状态正确
+      const transformedOp = OperationTransformer.transformOperations([op], allUserOps)[0];
+      
+      // 应用转换后的操作
+      const newDoc = OperationTransformer.applyOperation(currentDoc, transformedOp);
+      
+      // 只有操作真正改变了文档时才记录
+      if (newDoc !== currentDoc) {
+        currentDoc = newDoc;
+        operationHistoryRef.current.push(transformedOp);
+      }
+    }
+    
+    // 更新显示和缓冲区
+    setText(currentDoc);
+    userEditBufferRef.current = currentDoc;
+    lastMergedAsrRef.current = asrBufferRef.current;
+    setHasPendingAsr(false); // 清除待处理标记
+    
+    // 同步合并后的文本到后端
+    syncUserEditToBackend(currentDoc);
+    
+    console.log('[ASR延迟应用] 已应用', sortedOps.length, '个待处理的ASR操作');
+  };
+
+  // 处理文本内容变化（来自 BlockEditor）- 共享编辑模式
   const handleTextChange = (newText: string) => {
     const oldText = userEditBufferRef.current || text;
     
@@ -467,12 +696,15 @@ function App() {
           clearTimeout(syncTimeoutRef.current);
         }
         
-        // 设置新的定时器：用户停止输入2秒后，标记为停止编辑并合并ASR新内容
+        // 设置新的定时器：用户停止输入1.5秒后，标记为停止编辑并应用待处理的ASR操作
         editingTimeoutRef.current = setTimeout(() => {
           isEditingRef.current = false;
           editingTimeoutRef.current = null;
-          mergeAsrUpdates();
-        }, 2000);
+          // 用户停止输入后，应用待处理的ASR操作
+          if (pendingAsrOperationsRef.current.length > 0) {
+            applyPendingAsrOperations();
+          }
+        }, 1500);
         
         // 延迟同步用户编辑到后端（防抖）
         syncTimeoutRef.current = setTimeout(() => {
@@ -481,65 +713,17 @@ function App() {
       }
     } else {
       // ASR自动更新：只更新显示和缓冲区，不标记为用户编辑
-      // 这种情况发生在appendAsrText调用onContentChange时
+      // 这种情况发生在appendAsrText或insertAsrText调用onContentChange时
       setText(newText);
       userEditBufferRef.current = newText;
     }
   };
 
-
-  // 合并ASR更新到用户编辑缓冲区 - 使用操作转换系统
-  const mergeAsrUpdates = () => {
-    const userEdit = userEditBufferRef.current || '';
-    const pendingOps = [...pendingAsrOperationsRef.current]; // 复制数组，避免修改原数组
-    
-    if (pendingOps.length === 0) {
-      // 没有待合并的ASR操作
-      lastMergedAsrRef.current = asrBufferRef.current;
-      return;
-    }
-    
-    // 应用待合并的ASR操作
-    let mergedDoc = userEdit;
-    
-    // 获取所有用户操作（用于转换）
-    const allUserOps = operationHistoryRef.current.filter(o => o.author === 'user');
-    
-    // 按时间戳排序待合并的操作
-    const sortedOps = [...pendingOps].sort((a, b) => a.timestamp - b.timestamp);
-    
-    for (const op of sortedOps) {
-      // 转换操作，使其相对于当前文档状态正确
-      // 需要转换相对于所有已应用的用户操作
-      const transformedOp = OperationTransformer.transformOperations([op], allUserOps)[0];
-      
-      // 应用转换后的操作
-      const newDoc = OperationTransformer.applyOperation(mergedDoc, transformedOp);
-      
-      // 只有操作真正改变了文档时才记录
-      if (newDoc !== mergedDoc) {
-        mergedDoc = newDoc;
-        operationHistoryRef.current.push(transformedOp);
-      }
-    }
-    
-    // 清空待合并操作
-    pendingAsrOperationsRef.current = [];
-    
-    // 更新显示和缓冲区
-    setText(mergedDoc);
-    userEditBufferRef.current = mergedDoc;
-    lastMergedAsrRef.current = asrBufferRef.current;
-    
-    // 同步合并后的文本到后端
-    syncUserEditToBackend(mergedDoc);
-    
-    console.log('[OT合并] 已合并ASR操作，文档长度:', mergedDoc.length, '操作数:', sortedOps.length);
-  };
   
   // 同步用户编辑到后端（带防抖和去重）
   const syncUserEditToBackend = async (userText: string) => {
-    if (!apiConnected || (state !== 'recording' && state !== 'paused')) {
+    // 只在ASR运行时同步
+    if (!apiConnected || (asrState !== 'recording' && asrState !== 'paused')) {
       return;
     }
     
@@ -585,17 +769,17 @@ function App() {
           <Workspace
             text={text}
             onTextChange={handleTextChange}
-            isRecording={state === 'recording'}
-            isPaused={state === 'paused'}
-            onAsrTextUpdate={handleAsrTextUpdate}
-            onStartRecording={startRecording}
-            onPauseRecording={pauseRecording}
-            onResumeRecording={resumeRecording}
-            onStopRecording={stopRecording}
+            asrState={asrState}
+            onStartAsr={startAsr}
+            onPauseAsr={pauseAsr}
+            onResumeAsr={resumeAsr}
+            onStopAsr={stopAsr}
+            onSaveText={saveText}
             onCopyText={copyText}
+            onClearText={clearText}
             apiConnected={apiConnected}
-            recordingState={state}
             blockEditorRef={blockEditorRef}
+            hasPendingAsr={hasPendingAsr}
           />
         )}
 

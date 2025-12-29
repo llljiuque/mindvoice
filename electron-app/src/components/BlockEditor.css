@@ -1,12 +1,13 @@
 .block-editor {
   flex: 1;
   overflow-y: auto;
-  padding: 96px 96px 96px 96px;
-  max-width: 900px;
-  margin: 0 auto;
+  padding: 24px 32px;
+  max-width: 100%;
+  margin: 0;
   min-height: 100%;
   box-sizing: border-box;
   width: 100%;
+  background: var(--color-bg-primary);
 }
 
 .block-editor-content {
@@ -15,24 +16,26 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  min-width: 0; /* 允许flex项目缩小 */
+  min-width: 0;
+  gap: 4px;
 }
 
 /* 滚动条样式 */
 .block-editor::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
 }
 
 .block-editor::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--color-bg-secondary);
 }
 
 .block-editor::-webkit-scrollbar-thumb {
-  background: rgba(55, 53, 47, 0.2);
-  border-radius: 4px;
+  background: var(--color-border-dark);
+  border-radius: 5px;
+  border: 2px solid var(--color-bg-secondary);
 }
 
 .block-editor::-webkit-scrollbar-thumb:hover {
-  background: rgba(55, 53, 47, 0.3);
+  background: var(--color-text-tertiary);
 }
 
