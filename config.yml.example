@@ -1,0 +1,32 @@
+# macOS 语音桌面助手配置文件示例
+# 复制此文件为 config.yml 并填入你的配置信息
+# 注意：config.yml 包含敏感信息，已添加到 .gitignore
+
+# ASR 配置（火山引擎）
+asr:
+  base_url: wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
+  app_id: ""  # 请填入你的 app_id
+  app_key: ""  # 请填入你的 app_key
+  access_key: ""  # 请填入你的 access_key
+  language: zh-CN  # 识别语言：zh-CN（中文）或 en-US（英语）
+
+# 存储配置
+storage:
+  path: ~/.voice_assistant/history.db  # 数据库路径
+
+# 音频配置
+audio:
+  format: WAV  # 音频格式
+  channels: 1  # 声道数（1=单声道，2=立体声）
+  rate: 16000  # 采样率（Hz）
+  chunk: 1024  # 每次读取的帧数
+
+# UI 配置
+ui:
+  theme: light  # 主题：light 或 dark
+  position:
+    x: 100  # 窗口 X 坐标
+    y: 100  # 窗口 Y 坐标
+  size:
+    width: 500  # 窗口宽度
+    height: 400  # 窗口高度

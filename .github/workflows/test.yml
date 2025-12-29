@@ -1,0 +1,23 @@
+name: 环境检查
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: 运行环境检查
+        run: |
+          chmod +x quick_start.sh
+          ./quick_start.sh --check-only
