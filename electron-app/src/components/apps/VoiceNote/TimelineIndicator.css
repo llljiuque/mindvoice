@@ -5,16 +5,16 @@
   padding: 4px 8px;
   margin-top: 4px;
   font-size: 11px;
-  color: #9ca3af;
+  color: #06b6d4;
   background: transparent;
   border-radius: var(--radius-sm);
-  opacity: 0.5;
+  opacity: 0.9;
   transition: all var(--transition-base);
   width: fit-content;
 }
 
 .timeline-indicator:hover {
-  opacity: 0.8;
+  opacity: 1;
   background: transparent;
 }
 
@@ -22,8 +22,8 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #9ca3af;
-  box-shadow: none;
+  background: #06b6d4;
+  box-shadow: 0 0 4px rgba(6, 182, 212, 0.3);
   flex-shrink: 0;
 }
 
@@ -36,17 +36,18 @@
 }
 
 .timeline-time {
-  color: #9ca3af;
+  color: #06b6d4;
   font-weight: 500;
 }
 
 .timeline-separator {
-  color: #9ca3af;
+  color: #06b6d4;
+  opacity: 0.6;
   font-weight: 400;
 }
 
 .timeline-duration {
-  color: #9ca3af;
+  color: #06b6d4;
   font-weight: 500;
   margin-left: 2px;
 }
@@ -63,7 +64,7 @@
     transform: translateY(-4px);
   }
   to {
-    opacity: 0.5;
+    opacity: 0.9;
     transform: translateY(0);
   }
 }

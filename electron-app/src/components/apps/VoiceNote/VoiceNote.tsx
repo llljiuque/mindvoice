@@ -13,6 +13,7 @@ interface BlockEditorHandle {
   getNoteInfo: () => NoteInfo | undefined;
   getBlocks: () => any[];
   setBlocks: (blocks: any[]) => void;
+  appendSummaryBlock: (summary: string) => void;
 }
 
 interface VoiceNoteProps {
@@ -56,6 +57,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   const [showToolbar, setShowToolbar] = useState(false);
   const [toolbarPosition, setToolbarPosition] = useState({ top: 0, left: 0 });
   const [noteInfo, setNoteInfo] = useState<NoteInfo | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
   const voiceNoteContentRef = useRef<HTMLDivElement>(null);
   
   // 判断是否显示欢迎界面：只要工作会话未激活，就显示欢迎界面
@@ -140,6 +142,66 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
     }
   };
 
+  // 处理生成小结
+  const handleSummary = async () => {
+    if (!blockEditorRef?.current || isSummarizing) return;
+    
+    setIsSummarizing(true);
+    
+    try {
+      // 获取所有blocks内容（排除note-info）
+      const blocks = blockEditorRef.current.getBlocks();
+      const contentBlocks = blocks.filter((b: any) => b.type !== 'note-info' && b.content.trim());
+      
+      if (contentBlocks.length === 0) {
+        alert('没有内容可以生成小结');
+        setIsSummarizing(false);
+        return;
+      }
+      
+      // 提取所有文本内容
+      const allText = contentBlocks.map((b: any) => b.content).join('\n\n');
+      
+      // 调用LLM API生成小结
+      const response = await fetch('http://127.0.0.1:8765/api/llm/simple-chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: allText,
+          system_prompt: `你是一个专业的会议记录员，擅长总结和提炼关键信息。
+请根据用户提供的会议记录或笔记内容，生成一个结构化的小结。
+
+要求：
+1. 提取关键要点和核心信息
+2. 组织成清晰的结构（如：背景、讨论要点、决策事项、待办事项等）
+3. 语言简洁明了，重点突出
+4. 如果有时间线信息，请保留
+5. 使用markdown格式，包含标题、列表等
+
+请直接输出小结内容，不要有其他多余的说明。`,
+          temperature: 0.5,
+          max_tokens: 2000,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (data.success && data.message) {
+        // 将小结添加到新的block中
+        blockEditorRef.current.appendSummaryBlock(data.message);
+      } else {
+        alert(`生成小结失败: ${data.error || '未知错误'}`);
+      }
+    } catch (error) {
+      console.error('生成小结失败:', error);
+      alert(`生成小结失败: ${error}`);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
   // 计算 App 状态
   const getAppStatus = (): AppStatusType => {
     if (!apiConnected) return 'error';
@@ -187,12 +249,12 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
                 <AppButton
                   onClick={onAsrStop}
                   variant="danger"
-                  size="large"
+                  size="medium"
                   icon="⏹"
                   title="停止语音识别"
                   ariaLabel="停止ASR"
                 >
-                  停止ASR
+                  停止
                 </AppButton>
               )}
 
@@ -200,12 +262,12 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
                 <AppButton
                   disabled
                   variant="warning"
-                  size="large"
+                  size="medium"
                   icon="⏳"
-                  title="正在停止..."
+                  title="正在停止语音识别..."
                   ariaLabel="正在停止"
                 >
-                  停止中...
+                  停止中
                 </AppButton>
               )}
             </>
@@ -218,12 +280,24 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
                 onClick={handleSave}
                 disabled={asrState !== 'idle' || !text || !text.trim()}
                 variant="info"
-                size="large"
+                size="medium"
                 icon="💾"
                 title="保存到历史记录"
                 ariaLabel="保存文本"
               >
                 保存
+              </AppButton>
+
+              <AppButton
+                onClick={handleSummary}
+                disabled={asrState !== 'idle' || !text || !text.trim() || isSummarizing}
+                variant="success"
+                size="medium"
+                icon={isSummarizing ? "⏳" : "📊"}
+                title="使用AI生成内容小结"
+                ariaLabel="生成小结"
+              >
+                {isSummarizing ? '生成中' : '小结'}
               </AppButton>
 
               <ButtonGroup>

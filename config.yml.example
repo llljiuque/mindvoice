@@ -12,6 +12,7 @@ asr:
   app_key: ""  # 请填入你的 app_key
   access_key: ""  # 请填入你的 access_key
   language: zh-CN  # 识别语言：zh-CN（中文）或 en-US（英语）
+  enable_nonstream: true  # 二遍识别：双向流式实时返回 + 非流式重新识别分句片段（快+准，仅限 bigmodel_async）
 
 # LLM 配置（大语言模型）
 llm:

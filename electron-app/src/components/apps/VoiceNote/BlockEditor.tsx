@@ -22,6 +22,8 @@ export interface Block {
   noteInfo?: NoteInfo;
   startTime?: number;
   endTime?: number;
+  isSummary?: boolean;
+  isBufferBlock?: boolean; // 标识底部缓冲块
 }
 
 interface BlockEditorProps {
@@ -38,6 +40,7 @@ export interface BlockEditorHandle {
   getNoteInfo: () => NoteInfo | undefined;
   getBlocks: () => Block[];
   setBlocks: (newBlocks: Block[]) => void;
+  appendSummaryBlock: (summary: string) => void;
 }
 
 
@@ -87,8 +90,11 @@ function createBlocksFromContent(content: string): Block[] {
 }
 
 function blocksToContent(blocks: Block[]): string {
-  // 排除 note-info 类型的 block
-  return blocks.filter(b => b.type !== 'note-info').map((b) => b.content).join('\n');
+  // 排除 note-info 和 buffer block
+  return blocks
+    .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
+    .map((b) => b.content)
+    .join('\n');
 }
 
 export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
@@ -102,23 +108,46 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   const asrWritingBlockIdRef = useRef<string | null>(null);
   const isAsrActive = isRecording;
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const lastBlockCountRef = useRef<number>(blocks.length);
+  const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const isComposingRef = useRef<boolean>(false); // 标记是否正在进行中文输入
+
+  // 确保底部始终有一个空的缓冲块（用于视觉空间）
+  const ensureBottomBufferBlock = useCallback((blocks: Block[]): Block[] => {
+    const updated = [...blocks];
+    
+    // 检查最后一个block是否是缓冲块
+    const lastBlock = updated[updated.length - 1];
+    const isLastBlockBuffer = lastBlock && lastBlock.isBufferBlock;
+    
+    // 如果最后一个block不是缓冲块，添加一个
+    if (!isLastBlockBuffer) {
+      const bufferBlock = createEmptyBlock(false);
+      bufferBlock.isBufferBlock = true;
+      updated.push(bufferBlock);
+    }
+    
+    return updated;
+  }, []);
 
   useEffect(() => {
     if (!isAsrActive) {
       if (initialBlocks && initialBlocks.length > 0) {
-        setBlocks(initialBlocks);
+        const blocksWithBuffer = ensureBottomBufferBlock(initialBlocks);
+        setBlocks(blocksWithBuffer);
       } else {
-        const newBlocks = createBlocksFromContent(initialContent);
+        const newBlocks = ensureBottomBufferBlock(createBlocksFromContent(initialContent));
         setBlocks(newBlocks);
       }
       asrWritingBlockIdRef.current = null;
     }
-  }, [initialContent, initialBlocks, isAsrActive]);
+  }, [initialContent, initialBlocks, isAsrActive, ensureBottomBufferBlock]);
 
   const ensureAsrWritingBlock = useCallback((blocks: Block[]): { blocks: Block[]; blockId: string; index: number } => {
     const updated = [...blocks];
     updated.forEach((b) => b.isAsrWriting = false);
     
+    // 找到最后一个空block（不包括缓冲块）
     let emptyBlockIdx = -1;
     for (let i = updated.length - 1; i >= 0; i--) {
       if (!updated[i].content || updated[i].content.trim() === '') {
@@ -127,19 +156,21 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       }
     }
     
-    if (emptyBlockIdx >= 0 && emptyBlockIdx === updated.length - 1) {
+    // 如果找到空block且不是最后一个（最后一个是缓冲块），使用它
+    if (emptyBlockIdx >= 0 && emptyBlockIdx < updated.length - 1) {
       updated[emptyBlockIdx] = {
         ...updated[emptyBlockIdx],
         isAsrWriting: true,
         content: '',
       };
       return { blocks: updated, blockId: updated[emptyBlockIdx].id, index: emptyBlockIdx };
-    } else {
-      const newBlock = createEmptyBlock(true);
-      updated.push(newBlock);
-      const emptyIdx = updated.length - 1;
-      return { blocks: updated, blockId: updated[emptyIdx].id, index: emptyIdx };
     }
+    
+    // 否则，在倒数第二个位置插入新的ASR写入块（保持缓冲块在最后）
+    const newBlock = createEmptyBlock(true);
+    updated.splice(updated.length - 1, 0, newBlock);
+    const asrIdx = updated.length - 2;
+    return { blocks: updated, blockId: updated[asrIdx].id, index: asrIdx };
   }, []);
 
   useEffect(() => {
@@ -148,14 +179,17 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         setBlocks((prev) => {
           const { blocks: updated, blockId } = ensureAsrWritingBlock(prev);
           asrWritingBlockIdRef.current = blockId;
-          return updated;
+          return ensureBottomBufferBlock(updated);
         });
       }
     } else {
-      setBlocks((prev) => prev.map((b) => ({ ...b, isAsrWriting: false })));
+      setBlocks((prev) => {
+        const updated = prev.map((b) => ({ ...b, isAsrWriting: false }));
+        return ensureBottomBufferBlock(updated);
+      });
       asrWritingBlockIdRef.current = null;
     }
-  }, [isAsrActive, ensureAsrWritingBlock]);
+  }, [isAsrActive, ensureAsrWritingBlock, ensureBottomBufferBlock]);
 
   const appendAsrText = useCallback(
     (newText: string, isDefiniteUtterance: boolean = false, timeInfo?: { startTime?: number; endTime?: number }) => {
@@ -184,8 +218,9 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             endTime: timeInfo?.endTime,
           };
           
+          // 在倒数第二个位置插入新的ASR写入块（保持缓冲块在最后）
           const nextBlock = createEmptyBlock(true);
-          updated.push(nextBlock);
+          updated.splice(updated.length - 1, 0, nextBlock);
           asrWritingBlockIdRef.current = nextBlock.id;
         } else {
           updated[currentIdx] = {
@@ -197,10 +232,10 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         const content = blocksToContent(updated);
         onContentChange?.(content, isDefiniteUtterance);
         
-        return updated;
+        return ensureBottomBufferBlock(updated);
       });
     },
-    [isAsrActive, ensureAsrWritingBlock, onContentChange]
+    [isAsrActive, ensureAsrWritingBlock, onContentChange, ensureBottomBufferBlock]
   );
 
   const setNoteInfoEndTime = useCallback(() => {
@@ -239,12 +274,56 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     setBlocks(newBlocks);
   }, []);
 
+  const appendSummaryBlock = useCallback((summary: string) => {
+    setBlocks((prev) => {
+      const updated = [...prev];
+      
+      // 移除所有空的 ASR 写入块
+      const filtered = updated.filter(b => !(b.isAsrWriting && !b.content.trim()));
+      
+      // 移除末尾的缓冲块（稍后会重新添加）
+      if (filtered.length > 0 && !filtered[filtered.length - 1].content.trim() && !filtered[filtered.length - 1].isAsrWriting) {
+        filtered.pop();
+      }
+      
+      // 创建小结标题块
+      const summaryTitleBlock: Block = {
+        id: `block-summary-title-${Date.now()}`,
+        type: 'h2',
+        content: '📊 会议小结',
+        isAsrWriting: false,
+        isSummary: true,
+      };
+      
+      // 创建小结内容块
+      const summaryContentBlock: Block = {
+        id: `block-summary-content-${Date.now()}`,
+        type: 'paragraph',
+        content: summary,
+        isAsrWriting: false,
+        isSummary: true,
+      };
+      
+      // 添加小结块
+      filtered.push(summaryTitleBlock);
+      filtered.push(summaryContentBlock);
+      
+      // 更新内容
+      const content = blocksToContent(filtered);
+      onContentChange?.(content, false);
+      
+      // 确保底部有缓冲块
+      return ensureBottomBufferBlock(filtered);
+    });
+  }, [onContentChange, ensureBottomBufferBlock]);
+
   useImperativeHandle(ref, () => ({ 
     appendAsrText,
     setNoteInfoEndTime,
     getNoteInfo,
     getBlocks,
     setBlocks: setBlocksFromExternal,
+    appendSummaryBlock,
   }));
 
   const getTagName = (type: BlockType) => {
@@ -285,8 +364,57 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       );
       const content = blocksToContent(updated);
       onContentChange?.(content, false);
-      return updated;
+      return ensureBottomBufferBlock(updated);
     });
+  };
+
+  // 保存光标位置
+  const saveCursorPosition = (element: HTMLElement) => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    
+    const range = selection.getRangeAt(0);
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(element);
+    preCaretRange.setEnd(range.endContainer, range.endOffset);
+    const caretOffset = preCaretRange.toString().length;
+    
+    return caretOffset;
+  };
+
+  // 恢复光标位置
+  const restoreCursorPosition = (element: HTMLElement, offset: number) => {
+    const selection = window.getSelection();
+    if (!selection) return;
+    
+    const range = document.createRange();
+    let currentOffset = 0;
+    let found = false;
+
+    const traverseNodes = (node: Node): boolean => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const textLength = node.textContent?.length || 0;
+        if (currentOffset + textLength >= offset) {
+          range.setStart(node, offset - currentOffset);
+          range.collapse(true);
+          found = true;
+          return true;
+        }
+        currentOffset += textLength;
+      } else {
+        for (let i = 0; i < node.childNodes.length; i++) {
+          if (traverseNodes(node.childNodes[i])) return true;
+        }
+      }
+      return false;
+    };
+
+    traverseNodes(element);
+    
+    if (found) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
   };
 
   // 处理noteInfo变化
@@ -300,7 +428,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         }
         return b;
       });
-      return updated;
+      return ensureBottomBufferBlock(updated);
     });
   };
 
@@ -318,6 +446,62 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     
     return parts.join(' · ');
   };
+
+  // 处理note-info编辑区域外的点击
+  // 检测是否有用户正在编辑的block
+  const isUserEditing = useCallback(() => {
+    // 检查是否有contentEditable元素获得焦点
+    const activeElement = document.activeElement;
+    if (activeElement && activeElement.getAttribute('contenteditable') === 'true') {
+      return true;
+    }
+    
+    // 检查是否在编辑note-info
+    if (editingBlockId) {
+      return true;
+    }
+    
+    return false;
+  }, [editingBlockId]);
+
+  // 当新block出现或ASR正在写入block时，自动滚动以确保内容完整可见
+  useEffect(() => {
+    if (!isAsrActive || isUserEditing()) {
+      lastBlockCountRef.current = blocks.length;
+      return;
+    }
+
+    const currentBlockCount = blocks.length;
+    const previousBlockCount = lastBlockCountRef.current;
+    
+    // 找到ASR正在写入的block
+    const asrWritingBlock = blocks.find(b => b.isAsrWriting);
+    
+    if (asrWritingBlock) {
+      const blockElement = blockRefs.current.get(asrWritingBlock.id);
+      
+      if (blockElement) {
+        // 检测是否是新增block
+        const isNewBlock = currentBlockCount > previousBlockCount;
+        
+        if (isNewBlock) {
+          // 新增block时，使用smooth滚动到block底部
+          blockElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        } else {
+          // 内容更新时，确保block完整可见但不过度滚动
+          const rect = blockElement.getBoundingClientRect();
+          const viewportHeight = window.innerHeight;
+          
+          // 如果block底部超出视口或顶部不可见，则滚动
+          if (rect.bottom > viewportHeight - 50 || rect.top < 100) {
+            blockElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          }
+        }
+      }
+    }
+    
+    lastBlockCountRef.current = currentBlockCount;
+  }, [blocks, isAsrActive, isUserEditing]);
 
   // 处理note-info编辑区域外的点击
   useEffect(() => {
@@ -338,13 +522,32 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   }, [editingBlockId]);
 
   const renderBlock = (block: Block) => {
+    // 缓冲块特殊处理：不显示，只用于占位
+    if (block.isBufferBlock) {
+      return (
+        <div 
+          key={block.id} 
+          className="block block-buffer"
+          style={{ minHeight: '200px', background: 'transparent' }}
+        >
+        </div>
+      );
+    }
+
     // note-info类型的特殊渲染
     if (block.type === 'note-info') {
       const isEditing = editingBlockId === block.id;
       const description = generateNoteInfoDescription(block.noteInfo);
 
       return (
-        <div key={block.id} className="block block-note-info-container">
+        <div 
+          key={block.id} 
+          className="block block-note-info-container"
+          ref={(el) => {
+            if (el) blockRefs.current.set(block.id, el);
+            else blockRefs.current.delete(block.id);
+          }}
+        >
           <div className="block-handle">
             <span className="handle-icon">📋</span>
           </div>
@@ -403,7 +606,14 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     const hasTimeInfo = block.startTime !== undefined && block.endTime !== undefined;
 
     return (
-      <div key={block.id} className={`block ${block.isAsrWriting ? 'block-asr-writing-container' : ''}`}>
+      <div 
+        key={block.id} 
+        className={`block ${block.isAsrWriting ? 'block-asr-writing-container' : ''} ${block.isSummary ? 'block-summary-container' : ''}`}
+        ref={(el) => {
+          if (el) blockRefs.current.set(block.id, el);
+          else blockRefs.current.delete(block.id);
+        }}
+      >
         <div className="block-handle">
           <span className="handle-icon">⋮⋮</span>
         </div>
@@ -412,23 +622,78 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             className={getClassName(block)}
             contentEditable={canEdit}
             suppressContentEditableWarning
-            onInput={(e) => {
+            onCompositionStart={() => {
+              // 中文输入开始
+              isComposingRef.current = true;
+            }}
+            onCompositionUpdate={() => {
+              // 中文输入进行中
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={(e) => {
+              // 中文输入结束，现在可以安全更新状态
+              isComposingRef.current = false;
               if (canEdit) {
-                handleBlockChange(block.id, e.currentTarget.textContent || '');
+                const element = e.currentTarget;
+                const cursorPos = saveCursorPosition(element);
+                const newContent = element.textContent || '';
+                handleBlockChange(block.id, newContent);
+                
+                // 在下一个渲染周期恢复光标位置
+                setTimeout(() => {
+                  if (cursorPos !== null) {
+                    restoreCursorPosition(element, cursorPos);
+                  }
+                }, 0);
+              }
+            }}
+            onInput={(e) => {
+              // 如果正在进行中文输入，不更新状态，等待 compositionEnd
+              if (isComposingRef.current) {
+                return;
+              }
+              
+              if (canEdit) {
+                const element = e.currentTarget;
+                const cursorPos = saveCursorPosition(element);
+                const newContent = element.textContent || '';
+                handleBlockChange(block.id, newContent);
+                
+                // 在下一个渲染周期恢复光标位置
+                setTimeout(() => {
+                  if (cursorPos !== null) {
+                    restoreCursorPosition(element, cursorPos);
+                  }
+                }, 0);
               }
             }}
             onPaste={(e) => {
               if (!canEdit) {
-              e.preventDefault();
+                e.preventDefault();
+              } else {
+                // 处理粘贴，保持纯文本
+                e.preventDefault();
+                const text = e.clipboardData.getData('text/plain');
+                const selection = window.getSelection();
+                if (selection && selection.rangeCount > 0) {
+                  const range = selection.getRangeAt(0);
+                  range.deleteContents();
+                  range.insertNode(document.createTextNode(text));
+                  range.collapse(false);
+                  
+                  // 触发 input 事件
+                  const element = e.currentTarget;
+                  const event = new Event('input', { bubbles: true });
+                  element.dispatchEvent(event);
+                }
               }
             }}
             data-placeholder={block.isAsrWriting ? '>' : getPlaceholder(block.type)}
             spellCheck={false}
             suppressHydrationWarning
             style={block.isAsrWriting ? { cursor: 'not-allowed', opacity: 0.7 } : undefined}
-          >
-            {block.content}
-          </Tag>
+            dangerouslySetInnerHTML={{ __html: block.content }}
+          />
           {hasTimeInfo && (
             <TimelineIndicator startTime={block.startTime} endTime={block.endTime} />
           )}

@@ -89,7 +89,7 @@ class RequestBuilder:
         }
 
     @staticmethod
-    def new_full_client_request(seq: int) -> bytes:
+    def new_full_client_request(seq: int, enable_nonstream: bool = False) -> bytes:
         header = AsrRequestHeader.default_header() \
             .with_message_type_specific_flags(MessageTypeSpecificFlags.POS_SEQUENCE)
         
@@ -110,7 +110,7 @@ class RequestBuilder:
                 "show_utterances": True,
                 "result_type": "single",
                 "vad_segment_duration": 600,
-                "enable_nonstream": False
+                "enable_nonstream": enable_nonstream
             }
         }
         payload_bytes = json.dumps(payload).encode('utf-8')
@@ -243,6 +243,7 @@ class VolcanoASRProvider(BaseASRProvider):
         self.app_id = ""
         self.app_key = ""
         self.access_key = ""
+        self.enable_nonstream = False
         self.session: Optional[aiohttp.ClientSession] = None
         self.conn = None
         self.seq = 1
@@ -270,6 +271,7 @@ class VolcanoASRProvider(BaseASRProvider):
         self.app_id = config.get('app_id', '')
         self.app_key = config.get('app_key', '') or config.get('app_id', '')
         self.access_key = config.get('access_key', '')
+        self.enable_nonstream = config.get('enable_nonstream', False)
         
         if not self.access_key or not self.access_key.strip():
             logger.error("[ASR-Init] ✗ 配置不完整：缺少 access_key")
@@ -285,6 +287,7 @@ class VolcanoASRProvider(BaseASRProvider):
         logger.info(f"[ASR-Init] app_id={'已设置' if self.app_id else '未设置'}")
         logger.info(f"[ASR-Init] app_key=已设置 ({len(self.app_key)} 字符)")
         logger.info(f"[ASR-Init] access_key=已设置 ({len(self.access_key)} 字符)")
+        logger.info(f"[ASR-Init] enable_nonstream={'开启' if self.enable_nonstream else '关闭'}")
         
         return super().initialize(config)
     
@@ -397,8 +400,8 @@ class VolcanoASRProvider(BaseASRProvider):
     async def _send_full_request(self):
         """发送完整客户端请求"""
         try:
-            request = RequestBuilder.new_full_client_request(self.seq)
-            logger.info(f"[ASR-WS] → 发送完整请求 (seq={self.seq}, size={len(request)}B)")
+            request = RequestBuilder.new_full_client_request(self.seq, self.enable_nonstream)
+            logger.info(f"[ASR-WS] → 发送完整请求 (seq={self.seq}, size={len(request)}B, enable_nonstream={self.enable_nonstream})")
             await self.conn.send_bytes(request)
             self.seq += 1
             logger.info(f"[ASR-WS] ✓ 完整请求已发送")
@@ -538,6 +541,7 @@ class VolcanoASRProvider(BaseASRProvider):
         """检测是否为确定的utterance并提取时间信息
         
         基于ASR服务返回的utterances中的definite字段判断。
+        当enable_nonstream开启时，此字段标记非流式模型重新识别的准确结果。
         
         Returns:
             tuple[bool, dict]: (是否为确定utterance, 时间信息)
@@ -551,6 +555,10 @@ class VolcanoASRProvider(BaseASRProvider):
             if isinstance(utterance, dict) and utterance.get('definite', False):
                 start_time = utterance.get('start_time', utterance.get('start_ms', utterance.get('begin_time', utterance.get('begin', 0))))
                 end_time = utterance.get('end_time', utterance.get('end_ms', utterance.get('end', 0)))
+                
+                if self.enable_nonstream:
+                    logger.info(f"[ASR-Result] 🎯 二遍识别结果 (definite=true, 准确率更高)")
+                
                 return True, {
                     'start_time': start_time,
                     'end_time': end_time
