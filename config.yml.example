@@ -13,6 +13,14 @@ asr:
   access_key: ""  # 请填入你的 access_key
   language: zh-CN  # 识别语言：zh-CN（中文）或 en-US（英语）
 
+# LLM 配置（大语言模型）
+llm:
+  provider: perfxcloud-专线  # 服务提供商
+  api_key: ""  # 请填入你的 API Key
+  base_url: https://deepseek.perfxlab.cn/v1  # API 基础 URL
+  model: Qwen3-Next-80B-Instruct  # 模型名称
+  max_context_tokens: 128000  # 最大上下文长度
+
 # 存储配置
 storage:
   path: ~/.voice_assistant/history.db  # 数据库路径

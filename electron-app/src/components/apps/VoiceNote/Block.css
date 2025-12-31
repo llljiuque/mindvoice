@@ -184,3 +184,79 @@
   }
 }
 
+/* Note-Info 特殊块样式 */
+.block-note-info-container {
+  background: var(--color-bg-primary);
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-md);
+}
+
+.block-note-info-container:hover {
+  background: var(--color-bg-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+.block-note-info-container .block-handle {
+  opacity: 1;
+  color: var(--color-primary);
+}
+
+.block-note-info {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--color-text-secondary);
+  padding: 12px 16px;
+  cursor: pointer;
+  min-height: 48px;
+}
+
+.block-note-info:hover {
+  background: var(--color-bg-secondary);
+}
+
+.block-note-info:empty:before {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.block-note-info-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.note-info-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-base);
+  font-family: inherit;
+}
+
+.note-info-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--color-bg-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.note-info-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.note-info-time {
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}

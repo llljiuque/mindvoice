@@ -1,0 +1,165 @@
+.app-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  box-shadow: var(--shadow-sm);
+  letter-spacing: 0.3px;
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.app-button::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.app-button:hover:not(:disabled)::before {
+  width: 300px;
+  height: 300px;
+}
+
+.app-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.app-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* ==================== 尺寸 ==================== */
+.app-button-small {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.app-button-medium {
+  padding: 10px 18px;
+  font-size: 14px;
+}
+
+.app-button-large {
+  padding: 12px 24px;
+  font-size: 15px;
+  min-width: 140px;
+}
+
+/* ==================== 变体样式 ==================== */
+.app-button-primary {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-primary-hover) 0%, #4338ca 100%);
+}
+
+.app-button-secondary {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-secondary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+}
+
+.app-button-success {
+  background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-success:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-success-hover) 0%, #047857 100%);
+}
+
+.app-button-warning {
+  background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-warning:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-warning-hover) 0%, #b45309 100%);
+}
+
+.app-button-danger {
+  background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-danger:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--color-danger-hover) 0%, #b91c1c 100%);
+}
+
+.app-button-info {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: var(--color-text-inverse);
+}
+
+.app-button-info:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+.app-button-ghost {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+.app-button-ghost:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-dark);
+}
+
+/* ==================== 图标和文字 ==================== */
+.app-button-icon {
+  font-size: 1.1em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.app-button-text {
+  line-height: 1;
+}
+
+/* ==================== 按钮组 ==================== */
+.app-button-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.app-button-group::before {
+  content: '';
+  width: 1px;
+  height: 24px;
+  background: var(--color-border);
+  margin-right: 4px;
+  margin-left: -4px;
+}
+
+.app-button-group:first-child::before {
+  display: none;
+}
+

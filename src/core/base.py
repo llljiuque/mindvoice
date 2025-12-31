@@ -2,7 +2,7 @@
 抽象基类定义
 """
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, AsyncIterator
 from enum import Enum
 
 
@@ -146,4 +146,46 @@ class AudioRecorder(ABC):
     @abstractmethod
     def cleanup(self):
         """清理资源"""
+        pass
+
+
+class LLMProvider(ABC):
+    """LLM 提供商抽象基类"""
+    
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """提供商名称"""
+        pass
+    
+    @abstractmethod
+    def initialize(self, config: Dict[str, Any]) -> bool:
+        """初始化提供商
+        
+        Args:
+            config: 配置字典
+            
+        Returns:
+            是否初始化成功
+        """
+        pass
+    
+    @abstractmethod
+    async def chat(self, messages: list[Dict[str, str]], stream: bool = False, **kwargs) -> Any:
+        """对话接口
+        
+        Args:
+            messages: 消息列表，格式 [{"role": "user", "content": "..."}]
+            stream: 是否流式返回
+            **kwargs: 其他参数（temperature, max_tokens等）
+            
+        Returns:
+            如果 stream=True，返回 AsyncIterator[str]
+            如果 stream=False，返回完整响应文本 str
+        """
+        pass
+    
+    @abstractmethod
+    def is_available(self) -> bool:
+        """检查服务是否可用"""
         pass

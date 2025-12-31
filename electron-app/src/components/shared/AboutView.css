@@ -1,0 +1,227 @@
+.about-view {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%);
+  padding: 2rem;
+}
+
+.about-container {
+  max-width: 800px;
+  margin: 0 auto;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+  overflow: hidden;
+}
+
+.about-header {
+  text-align: center;
+  padding: 3rem 2rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.about-logo {
+  margin-bottom: 1rem;
+}
+
+.about-logo-icon {
+  font-size: 4rem;
+  display: inline-block;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.about-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem 0;
+  letter-spacing: -0.5px;
+}
+
+.about-subtitle {
+  font-size: 1.1rem;
+  opacity: 0.95;
+  margin: 0;
+  font-weight: 300;
+}
+
+.about-content {
+  padding: 2rem;
+}
+
+.about-section {
+  margin-bottom: 2rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.about-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.section-title {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #2d3748;
+  margin: 0 0 1rem 0;
+  display: flex;
+  align-items: center;
+}
+
+.section-title::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 1.3rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  margin-right: 0.75rem;
+  border-radius: 2px;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.info-label {
+  font-size: 0.875rem;
+  color: #6c757d;
+  margin-bottom: 0.25rem;
+  font-weight: 500;
+}
+
+.info-value {
+  font-size: 1.125rem;
+  color: #2d3748;
+  font-weight: 600;
+}
+
+.developer-info {
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.developer-name {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #2d3748;
+  margin: 0 0 0.75rem 0;
+}
+
+.contact-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.contact-label {
+  font-size: 0.9rem;
+  color: #6c757d;
+  font-weight: 500;
+}
+
+.contact-link {
+  font-size: 0.9rem;
+  color: #667eea;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.2s;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.contact-link:hover {
+  color: #764ba2;
+  background: #f0f0f0;
+}
+
+.about-description {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: #4a5568;
+  margin: 0;
+}
+
+.tech-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.tech-badge {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+  transition: transform 0.2s;
+}
+
+.tech-badge:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+}
+
+.about-footer {
+  text-align: center;
+  padding-top: 1.5rem;
+  margin-top: 1rem;
+}
+
+.copyright {
+  font-size: 0.875rem;
+  color: #6c757d;
+  margin: 0;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .about-view {
+    padding: 1rem;
+  }
+
+  .about-header {
+    padding: 2rem 1rem;
+  }
+
+  .about-title {
+    font-size: 2rem;
+  }
+
+  .about-content {
+    padding: 1.5rem;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

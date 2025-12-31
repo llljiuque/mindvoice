@@ -1,0 +1,321 @@
+.zen-chat {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background-size: cover;
+  background-position: center;
+}
+
+.zen-chat-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  z-index: 0;
+}
+
+/* 顶部栏 */
+.zen-chat-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 30px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.zen-master-info {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.zen-master-avatar {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 20px;
+  font-weight: 600;
+  box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+}
+
+.zen-master-name {
+  font-size: 20px;
+  font-weight: 600;
+  color: white;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  font-family: 'STKaiti', 'KaiTi', '楷体', serif;
+}
+
+.zen-exit-button {
+  padding: 10px 24px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 20px;
+  color: white;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: 'STKaiti', 'KaiTi', '楷体', serif;
+}
+
+.zen-exit-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.6);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* 对话区域 */
+.zen-chat-messages {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  overflow-y: auto;
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.zen-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+}
+
+.zen-lotus {
+  font-size: 80px;
+  animation: lotus-float 3s ease-in-out infinite;
+}
+
+@keyframes lotus-float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(5deg);
+  }
+}
+
+.zen-greeting {
+  font-size: 24px;
+  color: white;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  font-family: 'STKaiti', 'KaiTi', '楷体', serif;
+  text-align: center;
+}
+
+/* 消息样式 */
+.zen-message {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 70%;
+  animation: message-in 0.3s ease-out;
+}
+
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.zen-message-user {
+  align-self: flex-end;
+}
+
+.zen-message-zen {
+  align-self: flex-start;
+}
+
+.zen-message-content {
+  padding: 15px 20px;
+  border-radius: 18px;
+  font-size: 16px;
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+.zen-message-user .zen-message-content {
+  background: rgba(255, 255, 255, 0.9);
+  color: #333;
+  border-bottom-right-radius: 4px;
+}
+
+.zen-message-zen .zen-message-content {
+  background: rgba(138, 43, 226, 0.8);
+  color: white;
+  border-bottom-left-radius: 4px;
+  font-family: 'STKaiti', 'KaiTi', '楷体', serif;
+}
+
+.zen-message-time {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0 10px;
+}
+
+/* 底部控制栏 */
+.zen-chat-controls {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 30px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  gap: 20px;
+}
+
+.zen-music-button {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  font-size: 24px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zen-music-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.1);
+}
+
+.zen-voice-button {
+  flex: 1;
+  height: 60px;
+  border-radius: 30px;
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border: none;
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+}
+
+.zen-voice-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(245, 87, 108, 0.5);
+}
+
+.zen-voice-button:active {
+  transform: translateY(0);
+}
+
+.zen-mic-icon {
+  font-size: 24px;
+}
+
+.zen-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: white;
+  font-size: 14px;
+}
+
+.zen-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* 开发信息 */
+.zen-dev-info {
+  position: absolute;
+  bottom: 120px;
+  right: 30px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 15px 20px;
+  border-radius: 12px;
+  font-size: 12px;
+  max-width: 250px;
+  backdrop-filter: blur(10px);
+}
+
+.zen-dev-info p {
+  margin: 0 0 10px 0;
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+.zen-dev-info ul {
+  margin: 0;
+  padding-left: 20px;
+  list-style: none;
+}
+
+.zen-dev-info li {
+  margin: 5px 0;
+  opacity: 0.8;
+}
+
+/* 滚动条样式 */
+.zen-chat-messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.zen-chat-messages::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.zen-chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+}
+
+.zen-chat-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+

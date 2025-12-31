@@ -5,8 +5,11 @@ interface Record {
   id: string;
   text: string;
   metadata: any;
+  app_type?: string;
   created_at: string;
 }
+
+type AppFilter = 'all' | 'voice-note' | 'voice-chat';
 
 interface HistoryViewProps {
   records: Record[];
@@ -16,8 +19,20 @@ interface HistoryViewProps {
   recordsPerPage: number;
   onLoadRecord: (id: string) => void;
   onDeleteRecords: (ids: string[]) => void;
-  onPageChange: (page: number) => void;
+  onPageChange: (page: number, appFilter?: AppFilter) => void;
+  appFilter?: AppFilter;
 }
+
+const APP_FILTERS: { value: AppFilter; label: string; icon: string }[] = [
+  { value: 'all', label: '全部', icon: '📚' },
+  { value: 'voice-note', label: '语音笔记', icon: '📝' },
+  { value: 'voice-chat', label: '语音助手', icon: '💬' },
+];
+
+const APP_TYPE_CONFIG: Record<string, { label: string; icon: string; color: string }> = {
+  'voice-note': { label: '语音笔记', icon: '📝', color: '#3b82f6' },
+  'voice-chat': { label: '语音助手', icon: '💬', color: '#8b5cf6' },
+};
 
 export const HistoryView: React.FC<HistoryViewProps> = ({
   records,
@@ -28,8 +43,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   onLoadRecord,
   onDeleteRecords,
   onPageChange,
+  appFilter = 'all',
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [currentFilter, setCurrentFilter] = useState<AppFilter>(appFilter);
 
   // 当记录变化时，清除不在当前页的选中项
   useEffect(() => {
@@ -75,6 +92,27 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     }
   };
 
+  const handleFilterChange = (filter: AppFilter) => {
+    setCurrentFilter(filter);
+    setSelectedIds(new Set());  // 切换筛选时清空选中
+    onPageChange(1, filter);  // 重置到第一页
+  };
+
+  const getAppBadge = (appType?: string) => {
+    const config = APP_TYPE_CONFIG[appType || 'voice-note'];
+    if (!config) return null;
+    
+    return (
+      <span 
+        className="app-badge" 
+        style={{ backgroundColor: `${config.color}15`, borderColor: `${config.color}40`, color: config.color }}
+      >
+        <span className="app-badge-icon">{config.icon}</span>
+        <span className="app-badge-text">{config.label}</span>
+      </span>
+    );
+  };
+
   const totalPages = Math.ceil(total / recordsPerPage);
   const isAllSelected = records.length > 0 && records.every(r => selectedIds.has(r.id));
   const hasSelected = selectedIds.size > 0;
@@ -109,6 +147,20 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           <h2 className="history-title">历史记录</h2>
           <div className="history-count">{total} 条记录</div>
         </div>
+      </div>
+
+      {/* 应用筛选器 */}
+      <div className="history-filters">
+        {APP_FILTERS.map((filter) => (
+          <button
+            key={filter.value}
+            className={`filter-btn ${currentFilter === filter.value ? 'filter-btn-active' : ''}`}
+            onClick={() => handleFilterChange(filter.value)}
+          >
+            <span className="filter-icon">{filter.icon}</span>
+            <span className="filter-label">{filter.label}</span>
+          </button>
+        ))}
       </div>
       
       <div className="history-toolbar">
@@ -146,14 +198,17 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             </div>
             <div className="history-item-content-wrapper">
               <div className="history-item-header">
-                <div className="history-item-date">
-                  {new Date(record.created_at).toLocaleString('zh-CN', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
+                <div className="history-item-meta">
+                  {getAppBadge(record.app_type)}
+                  <div className="history-item-date">
+                    {new Date(record.created_at).toLocaleString('zh-CN', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </div>
                 </div>
                 <div className="history-item-actions">
                   <button
@@ -180,7 +235,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <div className="history-pagination">
           <button
             className="history-page-btn"
-            onClick={() => onPageChange(currentPage - 1)}
+            onClick={() => onPageChange(currentPage - 1, currentFilter)}
             disabled={currentPage === 1}
           >
             上一页
@@ -190,7 +245,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </div>
           <button
             className="history-page-btn"
-            onClick={() => onPageChange(currentPage + 1)}
+            onClick={() => onPageChange(currentPage + 1, currentFilter)}
             disabled={currentPage === totalPages}
           >
             下一页

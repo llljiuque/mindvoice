@@ -76,6 +76,13 @@ class Config:
                 'access_key': '',
                 'language': 'zh-CN'
             },
+            'llm': {
+                'provider': '',
+                'api_key': '',
+                'base_url': '',
+                'model': '',
+                'max_context_tokens': 128000
+            },
             'storage': {
                 'type': 'sqlite',
                 'path': str(self.config_dir / 'history.db')

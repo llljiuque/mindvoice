@@ -1,9 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { Sidebar } from './components/Sidebar';
-import { Workspace } from './components/Workspace';
-import { HistoryView } from './components/HistoryView';
-import { SettingsView } from './components/SettingsView';
-import { Toast } from './components/Toast';
+import { Sidebar, AppView } from './components/shared/Sidebar';
+import { VoiceNote } from './components/apps/VoiceNote/VoiceNote';
+import { VoiceChat } from './components/apps/VoiceChat/VoiceChat';
+import VoiceZen from './components/apps/VoiceZen/VoiceZen';
+import { HistoryView } from './components/shared/HistoryView';
+import { SettingsView } from './components/shared/SettingsView';
+import { AboutView } from './components/shared/AboutView';
+import { Toast } from './components/shared/Toast';
+import { ConfirmDialog } from './components/shared/ConfirmDialog';
 import './App.css';
 
 const API_BASE_URL = 'http://127.0.0.1:8765';
@@ -23,16 +27,190 @@ function App() {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [apiConnected, setApiConnected] = useState(false);
-  const [activeView, setActiveView] = useState<'workspace' | 'history' | 'settings'>('workspace');
+  const [activeView, setActiveView] = useState<AppView>('voice-note');
   const [records, setRecords] = useState<Record[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [recordsTotal, setRecordsTotal] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [appFilter, setAppFilter] = useState<'all' | 'voice-note' | 'voice-chat' | 'voice-zen'>('all');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  
+  // 工作状态管理
+  const [activeWorkingApp, setActiveWorkingApp] = useState<AppView | null>(null);
+  const [showSwitchConfirm, setShowSwitchConfirm] = useState(false);
+  const [pendingView, setPendingView] = useState<AppView | null>(null);
+  const [isWorkSessionActive, setIsWorkSessionActive] = useState(false);
   
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const blockEditorRef = useRef<{ appendAsrText: (text: string, isDefiniteUtterance?: boolean) => void } | null>(null);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 工作状态检查
+  const isAppWorking = (app: AppView): boolean => {
+    switch (app) {
+      case 'voice-note':
+        return asrState === 'recording' || text.trim().length > 0 || isWorkSessionActive;
+      case 'voice-chat':
+        // TODO: 实现 VoiceChat 的工作状态检查
+        return false;
+      case 'voice-zen':
+        // TODO: 实现 VoiceZen 的工作状态检查
+        return false;
+      default:
+        return false;
+    }
+  };
+
+  // 开始工作会话
+  const startWorkSession = (app: AppView): boolean => {
+    if (activeWorkingApp && activeWorkingApp !== app) {
+      setToast({ 
+        message: `${getAppName(activeWorkingApp)} 正在工作中，请先完成当前工作`, 
+        type: 'warning' 
+      });
+      return false;
+    }
+    setActiveWorkingApp(app);
+    setIsWorkSessionActive(true);
+    return true;
+  };
+
+  // 结束工作会话
+  const endWorkSession = () => {
+    setActiveWorkingApp(null);
+    setIsWorkSessionActive(false);
+  };
+
+  // 获取应用名称
+  const getAppName = (app: AppView): string => {
+    const names: Record<AppView, string> = {
+      'voice-note': '语音笔记',
+      'voice-chat': '语音助手',
+      'voice-zen': '禅',
+      'history': '历史记录',
+      'settings': '设置',
+      'about': '关于',
+    };
+    return names[app] || app;
+  };
+
+  // 应用切换处理
+  const handleViewChange = (newView: AppView) => {
+    // 如果切换到历史或设置，检查是否有工作中的应用
+    if (newView === 'history' || newView === 'settings' || newView === 'about') {
+      if (activeWorkingApp && isAppWorking(activeWorkingApp)) {
+        setPendingView(newView);
+        setShowSwitchConfirm(true);
+        return;
+      }
+      setActiveView(newView);
+      return;
+    }
+    
+    // 如果有应用在工作
+    if (activeWorkingApp && activeWorkingApp !== newView) {
+      if (isAppWorking(activeWorkingApp)) {
+        setPendingView(newView);
+        setShowSwitchConfirm(true);
+        return;
+      }
+    }
+    
+    // 切换到新应用
+    setActiveView(newView);
+  };
+
+  // 保存并切换
+  const saveAndSwitch = async () => {
+    if (activeWorkingApp === 'voice-note') {
+      if (text.trim()) {
+        await saveText();
+      }
+    }
+    // 其他应用的保存逻辑...
+    
+    endWorkSession();
+    if (pendingView) {
+      setActiveView(pendingView);
+      setPendingView(null);
+    }
+    setShowSwitchConfirm(false);
+  };
+
+  // 放弃并切换
+  const discardAndSwitch = () => {
+    if (activeWorkingApp === 'voice-note') {
+      setText('');
+      localStorage.removeItem('voiceNoteDraft');  // 清除草稿
+    }
+    // 其他应用的清理逻辑...
+    
+    endWorkSession();
+    if (pendingView) {
+      setActiveView(pendingView);
+      setPendingView(null);
+    }
+    setShowSwitchConfirm(false);
+  };
+
+  // 取消切换
+  const cancelSwitch = () => {
+    setPendingView(null);
+    setShowSwitchConfirm(false);
+  };
+
+  // 自动保存草稿到 localStorage
+  useEffect(() => {
+    if (text.trim() && isWorkSessionActive && activeView === 'voice-note') {
+      // 清除之前的定时器
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+      
+      // 3秒后自动保存草稿
+      autoSaveTimerRef.current = setTimeout(() => {
+        try {
+          const draft = {
+            text,
+            app: activeView,
+            timestamp: Date.now(),
+          };
+          localStorage.setItem('voiceNoteDraft', JSON.stringify(draft));
+          console.log('草稿已自动保存');
+        } catch (e) {
+          console.error('保存草稿失败:', e);
+        }
+      }, 3000);
+    }
+    
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [text, isWorkSessionActive, activeView]);
+
+  // 恢复草稿
+  useEffect(() => {
+    try {
+      const savedDraft = localStorage.getItem('voiceNoteDraft');
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft);
+        // 只恢复24小时内的草稿
+        const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+        if (draft.timestamp > oneDayAgo && draft.text) {
+          setText(draft.text);
+          setToast({ message: '已恢复上次未保存的草稿', type: 'info' });
+        } else {
+          // 清除过期草稿
+          localStorage.removeItem('voiceNoteDraft');
+        }
+      }
+    } catch (e) {
+      console.error('恢复草稿失败:', e);
+    }
+  }, []);
 
   // 检查API连接
   const checkApiConnection = async () => {
@@ -220,7 +398,7 @@ function App() {
   };
 
   // 保存文本（仅在idle状态时可用）
-  const saveText = async () => {
+  const saveText = async (noteInfo?: any) => {
     if (!apiConnected) {
       setError('API未连接');
       return;
@@ -237,14 +415,44 @@ function App() {
     }
 
     try {
+      // 根据当前活动视图确定应用类型
+      const appType = activeView === 'voice-chat' ? 'voice-chat' : 'voice-note';
+      
+      // 构建保存的文本内容（如果有noteInfo，则在前面添加）
+      let contentToSave = text.trim();
+      if (noteInfo && appType === 'voice-note') {
+        const infoHeader = [
+          `📋 笔记信息`,
+          noteInfo.title ? `📌 标题: ${noteInfo.title}` : '',
+          noteInfo.type ? `🏷️ 类型: ${noteInfo.type}` : '',
+          noteInfo.relatedPeople ? `👥 相关人员: ${noteInfo.relatedPeople}` : '',
+          noteInfo.location ? `📍 地点: ${noteInfo.location}` : '',
+          `⏰ 开始时间: ${noteInfo.startTime}`,
+          noteInfo.endTime ? `⏱️ 结束时间: ${noteInfo.endTime}` : '',
+          '',
+          '---',
+          '',
+        ].filter(line => line).join('\n');
+        
+        contentToSave = infoHeader + contentToSave;
+      }
+      
       const response = await fetch(`${API_BASE_URL}/api/text/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim() }),
+        body: JSON.stringify({ 
+          text: contentToSave,
+          app_type: appType
+        }),
       });
       const data = await response.json();
       if (data.success) {
         setToast({ message: '已保存到历史记录', type: 'success' });
+        // 保存成功后清除草稿
+        localStorage.removeItem('voiceNoteDraft');
+        // 结束工作会话
+        endWorkSession();
+        setText('');  // 清空内容
       } else {
         setError(data.message || '保存失败');
       }
@@ -269,6 +477,8 @@ function App() {
   const clearText = () => {
     if (text && window.confirm('确定要清空当前内容吗？此操作不可撤销。')) {
       setText('');
+      localStorage.removeItem('voiceNoteDraft');  // 清除草稿
+      endWorkSession();  // 清空时结束工作会话
       setToast({ message: '内容已清空', type: 'info' });
     }
   };
@@ -276,17 +486,19 @@ function App() {
   // 历史记录
   const RECORDS_PER_PAGE = 20;
   
-  const loadRecords = async (page: number = currentPage) => {
+  const loadRecords = async (page: number = currentPage, filter: 'all' | 'voice-note' | 'voice-chat' | 'voice-zen' = appFilter) => {
     if (!apiConnected) return;
     setLoadingRecords(true);
     try {
       const offset = (page - 1) * RECORDS_PER_PAGE;
-      const response = await fetch(`${API_BASE_URL}/api/records?limit=${RECORDS_PER_PAGE}&offset=${offset}`);
+      const filterParam = filter !== 'all' ? `&app_type=${filter}` : '';
+      const response = await fetch(`${API_BASE_URL}/api/records?limit=${RECORDS_PER_PAGE}&offset=${offset}${filterParam}`);
       const data = await response.json();
       if (data.success) {
         setRecords(data.records);
         setRecordsTotal(data.total);
         setCurrentPage(page);
+        setAppFilter(filter);
       } else {
         setError('加载历史记录失败');
       }
@@ -325,7 +537,7 @@ function App() {
       const data = await response.json();
       if (data.text) {
         setText(data.text);
-        setActiveView('workspace');
+        setActiveView('voice-note');
       }
     } catch (e) {
       setError(`加载记录失败: ${e}`);
@@ -340,13 +552,17 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar activeView={activeView} onViewChange={setActiveView} />
+      <Sidebar 
+        activeView={activeView} 
+        onViewChange={handleViewChange}
+        activeWorkingApp={activeWorkingApp}
+      />
       
       <div className="app-main">
         {error && <div className="error-banner">{error}</div>}
 
-        {activeView === 'workspace' && (
-          <Workspace
+        {activeView === 'voice-note' && (
+          <VoiceNote
             text={text}
             onTextChange={setText}
             asrState={asrState}
@@ -357,7 +573,22 @@ function App() {
             onClearText={clearText}
             apiConnected={apiConnected}
             blockEditorRef={blockEditorRef}
+            isWorkSessionActive={isWorkSessionActive}
+            onStartWork={() => startWorkSession('voice-note')}
+            onEndWork={endWorkSession}
           />
+        )}
+
+        {activeView === 'voice-chat' && (
+          <VoiceChat 
+            apiConnected={apiConnected}
+            onStartWork={() => startWorkSession('voice-chat')}
+            onEndWork={endWorkSession}
+          />
+        )}
+
+        {activeView === 'voice-zen' && (
+          <VoiceZen />
         )}
 
         {activeView === 'history' && (
@@ -367,6 +598,7 @@ function App() {
             total={recordsTotal}
             currentPage={currentPage}
             recordsPerPage={RECORDS_PER_PAGE}
+            appFilter={appFilter}
             onLoadRecord={loadRecord}
             onDeleteRecords={deleteRecords}
             onPageChange={loadRecords}
@@ -374,6 +606,8 @@ function App() {
         )}
 
         {activeView === 'settings' && <SettingsView apiConnected={apiConnected} />}
+
+        {activeView === 'about' && <AboutView />}
       </div>
 
       {toast && (
@@ -383,6 +617,31 @@ function App() {
           onClose={() => setToast(null)}
         />
       )}
+
+      <ConfirmDialog
+        open={showSwitchConfirm}
+        title="工作未完成"
+        message={`您在 ${getAppName(activeWorkingApp || 'voice-note')} 中有未保存的内容，是否保存？`}
+        type="warning"
+        actions={[
+          {
+            label: '保存并切换',
+            variant: 'success',
+            onClick: saveAndSwitch,
+          },
+          {
+            label: '放弃内容',
+            variant: 'danger',
+            onClick: discardAndSwitch,
+          },
+          {
+            label: '取消',
+            variant: 'ghost',
+            onClick: cancelSwitch,
+          },
+        ]}
+        onClose={cancelSwitch}
+      />
     </div>
   );
 }

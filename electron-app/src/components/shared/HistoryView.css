@@ -89,6 +89,58 @@
   border-radius: var(--radius-lg);
 }
 
+/* 筛选器 */
+.history-filters {
+  display: flex;
+  gap: 8px;
+  padding: 16px 64px;
+  background: var(--color-bg-primary);
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.filter-btn:hover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-dark);
+  transform: translateY(-1px);
+}
+
+.filter-btn-active {
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  border-color: var(--color-primary);
+  font-weight: 600;
+}
+
+.filter-btn-active:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.filter-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.filter-label {
+  white-space: nowrap;
+}
+
 .history-toolbar {
   padding: 16px 64px;
   border-bottom: 1px solid var(--color-border);
@@ -185,8 +237,18 @@
 .history-item-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 12px;
+  gap: 12px;
+}
+
+.history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .history-item-date {
@@ -194,6 +256,29 @@
   color: var(--color-text-secondary);
   font-weight: 600;
   letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* 应用标签 */
+.app-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.app-badge-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.app-badge-text {
+  line-height: 1;
 }
 
 .history-item-actions {

@@ -138,10 +138,10 @@ function stopPythonServer(): void {
  */
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 500,
-    height: 400,
-    minWidth: 400,
-    minHeight: 300,
+    width: 450,        // 手机竖屏比例 9:16
+    height: 800,
+    minWidth: 375,     // 最小宽度（iPhone SE）
+    minHeight: 667,    // 最小高度（iPhone SE）
     title: 'MindVoice',
     webPreferences: {
       nodeIntegration: false,

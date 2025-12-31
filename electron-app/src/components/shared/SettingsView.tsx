@@ -199,10 +199,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
         )}
 
         <div className="settings-section">
-          <h3 className="settings-section-title">音频源</h3>
-          <p className="settings-section-description">
-            选择用于语音输入的音频设备
-          </p>
+          <div className="settings-section-header">
+            <div>
+              <h3 className="settings-section-title">音频源</h3>
+              <p className="settings-section-description">
+                选择用于语音输入的音频设备
+              </p>
+            </div>
+            <button
+              className="settings-btn-icon settings-btn-refresh-icon"
+              onClick={loadDevices}
+              disabled={loading || !apiConnected}
+              title={loading ? '加载中...' : '刷新设备列表'}
+            >
+              <svg 
+                width="20" 
+                height="20" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                className={loading ? 'rotating' : ''}
+              >
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+              </svg>
+            </button>
+          </div>
           
           {loading ? (
             <div className="settings-loading">
@@ -212,12 +236,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
           ) : devices.length === 0 ? (
             <div className="settings-empty">
               <p>未找到音频输入设备</p>
-              <button 
-                className="settings-btn settings-btn-refresh"
-                onClick={loadDevices}
-              >
-                刷新
-              </button>
             </div>
           ) : (
             <div className="settings-device-list">
@@ -234,6 +252,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
                   <div className="settings-device-name">默认设备</div>
                   <div className="settings-device-desc">使用系统默认音频输入设备</div>
                 </div>
+                {currentDevice === null && (
+                  <div className="settings-device-check">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.1"/>
+                      <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </div>
+                )}
               </label>
               
               {devices.map((device) => (
@@ -252,20 +278,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
                       {device.channels} 声道, {Math.round(device.samplerate)} Hz
                     </div>
                   </div>
+                  {currentDevice === device.id && (
+                    <div className="settings-device-check">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.1"/>
+                        <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                  )}
                 </label>
               ))}
             </div>
           )}
-          
-          <div className="settings-actions">
-            <button
-              className="settings-btn settings-btn-refresh"
-              onClick={loadDevices}
-              disabled={loading || !apiConnected}
-            >
-              {loading ? '加载中...' : '刷新设备列表'}
-            </button>
-          </div>
         </div>
 
         <div className="settings-section">

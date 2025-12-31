@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Set, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 # 添加项目根目录到路径
@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root))
 from src.core.config import Config
 from src.core.base import RecordingState
 from src.services.voice_service import VoiceService
+from src.services.llm_service import LLMService
 from src.utils.audio_recorder import SoundDeviceRecorder
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     setup_voice_service()
+    setup_llm_service()
     
     yield
     
-    global voice_service, recorder
+    global voice_service, llm_service, recorder
     logger.info("[API] 正在关闭服务...")
     
     if voice_service:
@@ -70,6 +72,7 @@ app.add_middleware(
 
 # 全局服务实例
 voice_service: Optional[VoiceService] = None
+llm_service: Optional[LLMService] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
 
@@ -118,6 +121,44 @@ class ListRecordsResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ChatMessage(BaseModel):
+    """聊天消息模型"""
+    role: str = Field(..., description="角色：system, user, assistant")
+    content: str = Field(..., description="消息内容")
+
+
+class ChatRequest(BaseModel):
+    """聊天请求模型"""
+    messages: list[ChatMessage] = Field(..., description="消息列表")
+    stream: bool = Field(default=False, description="是否流式返回")
+    temperature: float = Field(default=0.7, ge=0, le=2, description="温度参数")
+    max_tokens: Optional[int] = Field(default=None, description="最大生成token数")
+
+
+class ChatResponse(BaseModel):
+    """聊天响应模型"""
+    success: bool
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+
+class SimpleChatRequest(BaseModel):
+    """简单聊天请求模型"""
+    message: str = Field(..., description="用户消息")
+    system_prompt: Optional[str] = Field(default=None, description="系统提示")
+    temperature: float = Field(default=0.7, ge=0, le=2, description="温度参数")
+    max_tokens: Optional[int] = Field(default=None, description="最大生成token数")
+
+
+class LLMInfoResponse(BaseModel):
+    """LLM信息响应"""
+    available: bool
+    name: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    max_context_tokens: Optional[int] = None
 
 
 # ==================== WebSocket广播函数 ====================
@@ -221,6 +262,29 @@ def setup_voice_service():
     except Exception as e:
         logger.error(f"[API] 语音服务初始化失败: {e}", exc_info=True)
         raise
+
+
+def setup_llm_service():
+    """初始化 LLM 服务"""
+    global llm_service, config
+    
+    logger.info("[API] 初始化 LLM 服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化 LLM 服务
+        llm_service = LLMService(config)
+        
+        if llm_service.is_available():
+            logger.info("[API] LLM 服务初始化完成")
+        else:
+            logger.warning("[API] LLM 服务不可用，请检查配置")
+            
+    except Exception as e:
+        logger.error(f"[API] LLM 服务初始化失败: {e}", exc_info=True)
+        llm_service = None
 
 
 def setup_logging():
@@ -379,6 +443,7 @@ async def stop_recording(request: StopRecordingRequest = StopRecordingRequest())
 class SaveTextRequest(BaseModel):
     """直接保存文本请求"""
     text: str
+    app_type: str = 'voice-note'  # 应用类型，默认为voice-note
 
 
 class SaveTextResponse(BaseModel):
@@ -406,6 +471,7 @@ async def save_text_directly(request: SaveTextRequest):
             'language': voice_service.config.get('asr.language', 'zh-CN'),
             'provider': 'manual',  # 标记为手动输入
             'input_method': 'keyboard',  # 输入方式：键盘
+            'app_type': request.app_type,  # 应用类型
             'created_at': voice_service._get_timestamp()
         }
         
@@ -423,19 +489,37 @@ async def save_text_directly(request: SaveTextRequest):
 
 
 @app.get("/api/records", response_model=ListRecordsResponse)
-async def list_records(limit: int = 50, offset: int = 0):
-    """列出历史记录"""
+async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
+    """列出历史记录
+    
+    Args:
+        limit: 返回记录数量限制
+        offset: 偏移量
+        app_type: 应用类型筛选（可选）：'voice-note', 'voice-chat', 'all'
+    """
     if not voice_service or not voice_service.storage_provider:
         raise HTTPException(status_code=503, detail="存储服务未初始化")
     
     try:
-        records = voice_service.storage_provider.list_records(limit=limit, offset=offset)
+        # 'all' 表示查询所有类型
+        filter_app_type = None if app_type == 'all' or not app_type else app_type
+        
+        records = voice_service.storage_provider.list_records(
+            limit=limit, 
+            offset=offset,
+            app_type=filter_app_type
+        )
+        
         # 使用count_records方法优化总数计算
         if hasattr(voice_service.storage_provider, 'count_records'):
-            total = voice_service.storage_provider.count_records()
+            total = voice_service.storage_provider.count_records(app_type=filter_app_type)
         else:
             # 降级方案：如果存储提供者不支持count，使用旧方法
-            all_records = voice_service.storage_provider.list_records(limit=10000, offset=0)
+            all_records = voice_service.storage_provider.list_records(
+                limit=10000, 
+                offset=0,
+                app_type=filter_app_type
+            )
             total = len(all_records)
         
         record_items = [
@@ -774,6 +858,89 @@ async def set_asr_config(request: SetASRConfigRequest):
     except Exception as e:
         logger.error(f"设置ASR配置失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== LLM API ====================
+
+@app.get("/api/llm/info", response_model=LLMInfoResponse)
+async def get_llm_info():
+    """获取LLM服务信息"""
+    if not llm_service:
+        return LLMInfoResponse(available=False)
+    
+    try:
+        info = llm_service.get_provider_info()
+        return LLMInfoResponse(**info)
+    except Exception as e:
+        logger.error(f"获取LLM信息失败: {e}")
+        return LLMInfoResponse(available=False)
+
+
+@app.post("/api/llm/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """LLM对话接口（非流式）
+    
+    请求示例：
+    {
+        "messages": [
+            {"role": "system", "content": "你是一个助手"},
+            {"role": "user", "content": "你好"}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 2000
+    }
+    """
+    if not llm_service or not llm_service.is_available():
+        raise HTTPException(status_code=503, detail="LLM服务不可用")
+    
+    try:
+        # 转换消息格式
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        # 调用LLM服务
+        response = await llm_service.chat(
+            messages=messages,
+            stream=False,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens
+        )
+        
+        return ChatResponse(success=True, message=response)
+        
+    except Exception as e:
+        logger.error(f"LLM对话失败: {e}", exc_info=True)
+        return ChatResponse(success=False, error=str(e))
+
+
+@app.post("/api/llm/simple-chat", response_model=ChatResponse)
+async def simple_chat(request: SimpleChatRequest):
+    """简化的LLM对话接口（单轮对话）
+    
+    请求示例：
+    {
+        "message": "你好，请介绍一下你自己",
+        "system_prompt": "你是一个友好的助手",
+        "temperature": 0.7
+    }
+    """
+    if not llm_service or not llm_service.is_available():
+        raise HTTPException(status_code=503, detail="LLM服务不可用")
+    
+    try:
+        # 调用简化接口
+        response = await llm_service.simple_chat(
+            user_message=request.message,
+            system_prompt=request.system_prompt,
+            stream=False,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens
+        )
+        
+        return ChatResponse(success=True, message=response)
+        
+    except Exception as e:
+        logger.error(f"LLM简单对话失败: {e}", exc_info=True)
+        return ChatResponse(success=False, error=str(e))
 
 
 # ==================== WebSocket API ====================

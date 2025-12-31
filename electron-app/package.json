@@ -22,7 +22,7 @@
     "electron",
     "mindvoice"
   ],
-  "author": "",
+  "author": "深圳王哥 & AI <manwjh@126.com>",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
