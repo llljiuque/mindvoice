@@ -323,6 +323,6 @@ const handleVoiceInput = async () => {
 ---
 
 **版本:** 2.0.0  
-**更新日期:** 2024-12-31  
+**更新日期:** 2025-12-31  
 **作者:** AI Assistant
 
