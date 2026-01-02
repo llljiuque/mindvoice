@@ -1,0 +1,85 @@
+# 提示词模板
+# 复制此文件创建新的Agent提示词配置
+
+metadata:
+  name: "YourAgent"  # Agent名称
+  version: "1.0.0"  # 版本号（遵循语义化版本）
+  author: "作者"  # 作者
+  updated: "2026-01-02"  # 最后更新日期
+  description: "简短描述Agent的功能"  # 描述
+  changelog:
+    - "v1.0.0: 初始版本"
+
+# 默认参数（可选）
+parameters:
+  temperature: 0.7  # 温度参数（0-2），越高越随机
+  max_tokens: 2000  # 最大生成token数
+  top_p: 0.9  # Nucleus sampling参数
+
+# 系统提示词（必需）
+# 使用 | 标记多行文本，保持缩进和格式
+system_prompt: |
+  你是[角色描述]。你的任务是[任务描述]。
+
+  输出要求：
+
+  1. [要求1]
+     - 详细说明
+     - 举例
+
+  2. [要求2]
+     - 详细说明
+     - 举例
+
+  3. [要求3]
+     - 详细说明
+     - 举例
+
+  输出示例：
+
+  [具体的输出示例，让LLM理解期望的格式]
+
+  请直接输出结果，不要有其他说明。
+
+# 提示词变体（可选）
+# 用于不同场景或A/B测试
+variants:
+  variant_a:
+    parameters:
+      temperature: 0.5
+    system_prompt: |
+      变体A的提示词内容...
+
+  variant_b:
+    parameters:
+      temperature: 0.8
+    system_prompt: |
+      变体B的提示词内容...
+
+# 示例（可选）
+# 用于测试和文档说明
+examples:
+  - description: "示例1描述"
+    input: "示例输入1"
+    expected_output: |
+      期望的输出1
+
+  - description: "示例2描述"
+    input: "示例输入2"
+    expected_output: |
+      期望的输出2
+
+# 质量评估标准（可选）
+quality_criteria:
+  - name: "准确性"
+    weight: 0.4
+    description: "输出是否准确"
+
+  - name: "格式"
+    weight: 0.3
+    description: "格式是否正确"
+
+  - name: "完整性"
+    weight: 0.3
+    description: "信息是否完整"
+

@@ -41,6 +41,9 @@ export interface BlockEditorHandle {
   getBlocks: () => Block[];
   setBlocks: (newBlocks: Block[]) => void;
   appendSummaryBlock: (summary: string) => void;
+  updateSummaryBlock: (summary: string) => void;
+  finalizeSummaryBlock: () => void;
+  removeSummaryBlock: () => void;
 }
 
 
@@ -79,21 +82,85 @@ function createNoteInfoBlock(): Block {
 function createBlocksFromContent(content: string): Block[] {
   const noteInfoBlock = createNoteInfoBlock();
   if (!content) return [noteInfoBlock, createEmptyBlock()];
+  
   const timestamp = Date.now();
-  const contentBlocks = content.split('\n').map((line, i) => ({
-    id: `block-${timestamp}-${i}-${Math.random()}`,
-    type: 'paragraph' as BlockType,
-    content: line,
-    isAsrWriting: false,
-  }));
+  const contentBlocks: Block[] = [];
+  
+  // 处理小结块的特殊标记
+  const summaryRegex = /\[SUMMARY_BLOCK_START\]([\s\S]*?)\[SUMMARY_BLOCK_END\]/g;
+  let lastIndex = 0;
+  let match;
+  let blockIndex = 0;
+  
+  while ((match = summaryRegex.exec(content)) !== null) {
+    // 处理小结块之前的普通内容
+    if (match.index > lastIndex) {
+      const beforeContent = content.substring(lastIndex, match.index);
+      const lines = beforeContent.split('\n').filter(line => line.trim() || line === '');
+      lines.forEach(line => {
+        contentBlocks.push({
+          id: `block-${timestamp}-${blockIndex++}-${Math.random()}`,
+          type: 'paragraph' as BlockType,
+          content: line,
+          isAsrWriting: false,
+        });
+      });
+    }
+    
+    // 创建小结块（保持完整，不拆分）
+    const summaryContent = match[1];
+    contentBlocks.push({
+      id: `block-${timestamp}-${blockIndex++}-${Math.random()}`,
+      type: 'paragraph' as BlockType,
+      content: summaryContent,
+      isAsrWriting: false,
+      isSummary: true,
+    });
+    
+    lastIndex = summaryRegex.lastIndex;
+  }
+  
+  // 处理剩余的普通内容
+  if (lastIndex < content.length) {
+    const remainingContent = content.substring(lastIndex);
+    const lines = remainingContent.split('\n').filter(line => line.trim() || line === '');
+    lines.forEach(line => {
+      contentBlocks.push({
+        id: `block-${timestamp}-${blockIndex++}-${Math.random()}`,
+        type: 'paragraph' as BlockType,
+        content: line,
+        isAsrWriting: false,
+      });
+    });
+  }
+  
+  // 如果没有小结块，使用原来的简单拆分逻辑
+  if (contentBlocks.length === 0) {
+    content.split('\n').forEach((line, i) => {
+      contentBlocks.push({
+        id: `block-${timestamp}-${i}-${Math.random()}`,
+        type: 'paragraph' as BlockType,
+        content: line,
+        isAsrWriting: false,
+      });
+    });
+  }
+  
   return [noteInfoBlock, ...contentBlocks];
 }
 
 function blocksToContent(blocks: Block[]): string {
   // 排除 note-info 和 buffer block
+  // 小结block使用特殊分隔符，防止被拆分
   return blocks
     .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
-    .map((b) => b.content)
+    .map((b) => {
+      if (b.isSummary) {
+        // 小结块使用特殊标记包裹，保持完整性
+        return `[SUMMARY_BLOCK_START]${b.content}[SUMMARY_BLOCK_END]`;
+      }
+      return b.content;
+    })
     .join('\n');
 }
 
@@ -282,31 +349,21 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       const filtered = updated.filter(b => !(b.isAsrWriting && !b.content.trim()));
       
       // 移除末尾的缓冲块（稍后会重新添加）
-      if (filtered.length > 0 && !filtered[filtered.length - 1].content.trim() && !filtered[filtered.length - 1].isAsrWriting) {
+      if (filtered.length > 0 && filtered[filtered.length - 1].isBufferBlock) {
         filtered.pop();
       }
       
-      // 创建小结标题块
-      const summaryTitleBlock: Block = {
-        id: `block-summary-title-${Date.now()}`,
-        type: 'h2',
-        content: '📊 会议小结',
-        isAsrWriting: false,
-        isSummary: true,
-      };
-      
-      // 创建小结内容块
-      const summaryContentBlock: Block = {
-        id: `block-summary-content-${Date.now()}`,
+      // 创建一个包含标题和内容的小结块（使用换行符分隔标题和内容）
+      const summaryBlock: Block = {
+        id: `block-summary-${Date.now()}`,
         type: 'paragraph',
-        content: summary,
+        content: summary ? `📊 会议小结\n\n${summary}` : '📊 会议小结\n\n生成中...',
         isAsrWriting: false,
         isSummary: true,
       };
       
       // 添加小结块
-      filtered.push(summaryTitleBlock);
-      filtered.push(summaryContentBlock);
+      filtered.push(summaryBlock);
       
       // 更新内容
       const content = blocksToContent(filtered);
@@ -317,6 +374,47 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     });
   }, [onContentChange, ensureBottomBufferBlock]);
 
+  const updateSummaryBlock = useCallback((summary: string) => {
+    setBlocks((prev) => {
+      const updated = [...prev];
+      
+      // 找到小结块并更新内容
+      const summaryBlockIndex = updated.findIndex(b => b.isSummary);
+      if (summaryBlockIndex >= 0) {
+        updated[summaryBlockIndex] = {
+          ...updated[summaryBlockIndex],
+          content: `📊 会议小结\n\n${summary}`,
+        };
+        
+        // 注意：流式更新时不调用 onContentChange，避免触发外部更新导致block重建
+        // 只在生成完成时（finalizeSummaryBlock）才更新外部内容
+      }
+      
+      return updated;
+    });
+  }, []); // 移除 onContentChange 依赖
+
+  const finalizeSummaryBlock = useCallback(() => {
+    setBlocks((prev) => {
+      // 生成完成，更新外部内容
+      const content = blocksToContent(prev);
+      onContentChange?.(content, false);
+      return prev;
+    });
+  }, [onContentChange]);
+
+  const removeSummaryBlock = useCallback(() => {
+    setBlocks((prev) => {
+      const updated = prev.filter(b => !b.isSummary);
+      
+      // 更新内容
+      const content = blocksToContent(updated);
+      onContentChange?.(content, false);
+      
+      return ensureBottomBufferBlock(updated);
+    });
+  }, [onContentChange, ensureBottomBufferBlock]);
+
   useImperativeHandle(ref, () => ({ 
     appendAsrText,
     setNoteInfoEndTime,
@@ -324,6 +422,9 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     getBlocks,
     setBlocks: setBlocksFromExternal,
     appendSummaryBlock,
+    updateSummaryBlock,
+    finalizeSummaryBlock,
+    removeSummaryBlock,
   }));
 
   const getTagName = (type: BlockType) => {
@@ -447,6 +548,25 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     return parts.join(' · ');
   };
 
+  // 处理删除block
+  const handleDeleteBlock = useCallback((blockId: string) => {
+    setBlocks((prev) => {
+      // 过滤掉要删除的block
+      const updated = prev.filter(b => b.id !== blockId);
+      
+      // 确保至少有 note-info block
+      if (updated.length === 0 || !updated.find(b => b.type === 'note-info')) {
+        return prev; // 不允许删除所有block
+      }
+      
+      // 更新内容
+      const content = blocksToContent(updated);
+      onContentChange?.(content, false);
+      
+      return ensureBottomBufferBlock(updated);
+    });
+  }, [onContentChange, ensureBottomBufferBlock]);
+
   // 处理note-info编辑区域外的点击
   // 检测是否有用户正在编辑的block
   const isUserEditing = useCallback(() => {
@@ -485,16 +605,16 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         const isNewBlock = currentBlockCount > previousBlockCount;
         
         if (isNewBlock) {
-          // 新增block时，使用smooth滚动到block底部
-          blockElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          // 新增block时，将block定位到视口中心偏上的位置，而不是贴底
+          blockElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
           // 内容更新时，确保block完整可见但不过度滚动
           const rect = blockElement.getBoundingClientRect();
           const viewportHeight = window.innerHeight;
           
-          // 如果block底部超出视口或顶部不可见，则滚动
-          if (rect.bottom > viewportHeight - 50 || rect.top < 100) {
-            blockElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          // 如果block底部超出视口或顶部不可见，则滚动到中心位置
+          if (rect.bottom > viewportHeight - 100 || rect.top < 100) {
+            blockElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }
       }
@@ -523,12 +643,13 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
 
   const renderBlock = (block: Block) => {
     // 缓冲块特殊处理：不显示，只用于占位
+    // 使用更大的高度，确保当前输入的block有足够的视觉空间
     if (block.isBufferBlock) {
       return (
         <div 
           key={block.id} 
           className="block block-buffer"
-          style={{ minHeight: '200px', background: 'transparent' }}
+          style={{ minHeight: '60vh', background: 'transparent' }}
         >
         </div>
       );
@@ -596,6 +717,16 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
               )}
             </div>
           )}
+          <button 
+            className="block-delete-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteBlock(block.id);
+            }}
+            title="删除此块"
+          >
+            🗑️
+          </button>
         </div>
       );
     }
@@ -698,6 +829,16 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             <TimelineIndicator startTime={block.startTime} endTime={block.endTime} />
           )}
         </div>
+        <button 
+          className="block-delete-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleDeleteBlock(block.id);
+          }}
+          title="删除此块"
+        >
+          🗑️
+        </button>
       </div>
     );
   };

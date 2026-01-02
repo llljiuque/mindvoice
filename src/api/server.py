@@ -6,10 +6,12 @@ import asyncio
 import logging
 import sys
 import os
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Set, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -23,6 +25,7 @@ from src.core.base import RecordingState
 from src.services.voice_service import VoiceService
 from src.services.llm_service import LLMService
 from src.utils.audio_recorder import SoundDeviceRecorder
+from src.agents import SummaryAgent
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,7 @@ app.add_middleware(
 # 全局服务实例
 voice_service: Optional[VoiceService] = None
 llm_service: Optional[LLMService] = None
+summary_agent: Optional[SummaryAgent] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
 
@@ -150,6 +154,7 @@ class SimpleChatRequest(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="系统提示")
     temperature: float = Field(default=0.7, ge=0, le=2, description="温度参数")
     max_tokens: Optional[int] = Field(default=None, description="最大生成token数")
+    stream: bool = Field(default=False, description="是否使用流式输出")
 
 
 class LLMInfoResponse(BaseModel):
@@ -220,7 +225,19 @@ def setup_voice_service():
         # 加载配置
         config = Config()
         
-        # 初始化录音器
+        # 获取VAD配置
+        vad_config = {
+            'enabled': config.get('audio.vad.enabled', False),
+            'mode': config.get('audio.vad.mode', 2),
+            'frame_duration_ms': config.get('audio.vad.frame_duration_ms', 20),
+            'speech_start_threshold': config.get('audio.vad.speech_start_threshold', 2),
+            'speech_end_threshold': config.get('audio.vad.speech_end_threshold', 10),
+            'min_speech_duration_ms': config.get('audio.vad.min_speech_duration_ms', 200),
+            'pre_speech_padding_ms': config.get('audio.vad.pre_speech_padding_ms', 100),
+            'post_speech_padding_ms': config.get('audio.vad.post_speech_padding_ms', 300)
+        }
+        
+        # 初始化录音器（传入VAD配置）
         audio_device = config.get('audio.device', None)
         if audio_device is not None:
             try:
@@ -232,7 +249,8 @@ def setup_voice_service():
             rate=config.get('audio.rate', 16000),
             channels=config.get('audio.channels', 1),
             chunk=config.get('audio.chunk', 1024),
-            device=audio_device
+            device=audio_device,
+            vad_config=vad_config  # 传入VAD配置
         )
         
         # 初始化语音服务
@@ -265,7 +283,7 @@ def setup_voice_service():
 
 def setup_llm_service():
     """初始化 LLM 服务"""
-    global llm_service, config
+    global llm_service, summary_agent, config
     
     logger.info("[API] 初始化 LLM 服务...")
     
@@ -278,12 +296,18 @@ def setup_llm_service():
         
         if llm_service.is_available():
             logger.info("[API] LLM 服务初始化完成")
+            
+            # 初始化 SummaryAgent
+            summary_agent = SummaryAgent(llm_service)
+            logger.info(f"[API] {summary_agent.name} 初始化完成")
         else:
             logger.warning("[API] LLM 服务不可用，请检查配置")
+            summary_agent = None
             
     except Exception as e:
         logger.error(f"[API] LLM 服务初始化失败: {e}", exc_info=True)
         llm_service = None
+        summary_agent = None
 
 
 def setup_logging():
@@ -924,30 +948,133 @@ async def chat(request: ChatRequest):
 async def simple_chat(request: SimpleChatRequest):
     """简化的LLM对话接口（单轮对话）
     
+    支持流式和非流式响应。
+    
     请求示例：
     {
         "message": "你好，请介绍一下你自己",
         "system_prompt": "你是一个友好的助手",
-        "temperature": 0.7
+        "temperature": 0.7,
+        "stream": false
     }
+    
+    流式响应格式（SSE）：
+    data: {"chunk": "文本片段"}
+    data: [DONE]
     """
     if not llm_service or not llm_service.is_available():
         raise HTTPException(status_code=503, detail="LLM服务不可用")
     
     try:
-        # 调用简化接口
-        response = await llm_service.simple_chat(
-            user_message=request.message,
-            system_prompt=request.system_prompt,
-            stream=False,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens
-        )
-        
-        return ChatResponse(success=True, message=response)
+        # 判断是否使用流式输出
+        if request.stream:
+            # 返回流式响应
+            async def generate():
+                try:
+                    async for chunk in llm_service.simple_chat(
+                        user_message=request.message,
+                        system_prompt=request.system_prompt,
+                        stream=True,
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens
+                    ):
+                        # 使用SSE格式发送数据
+                        yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    logger.error(f"流式响应失败: {e}", exc_info=True)
+                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # 非流式响应
+            response = await llm_service.simple_chat(
+                user_message=request.message,
+                system_prompt=request.system_prompt,
+                stream=False,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens
+            )
+            
+            return ChatResponse(success=True, message=response)
         
     except Exception as e:
         logger.error(f"LLM简单对话失败: {e}", exc_info=True)
+        return ChatResponse(success=False, error=str(e))
+
+
+@app.post("/api/summary/generate")
+async def generate_summary(request: SimpleChatRequest):
+    """生成会议小结（使用专门的SummaryAgent）
+    
+    请求示例：
+    {
+        "message": "会议记录内容...",
+        "stream": true
+    }
+    
+    注意：
+    - system_prompt将被忽略，使用SummaryAgent内置的提示词
+    - 输入内容会自动过滤掉已有的小结块
+    - 支持流式和非流式输出
+    """
+    if not summary_agent or not summary_agent.is_available():
+        raise HTTPException(status_code=503, detail="小结服务不可用")
+    
+    try:
+        # 判断是否使用流式输出
+        if request.stream:
+            # 返回流式响应
+            async def generate():
+                try:
+                    # generate_summary 返回 AsyncIterator，直接迭代
+                    async for chunk in await summary_agent.generate_summary(
+                        content=request.message,
+                        stream=True,
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens
+                    ):
+                        # 使用SSE格式发送数据
+                        yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    logger.error(f"流式生成小结失败: {e}", exc_info=True)
+                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # 非流式响应
+            summary = await summary_agent.generate_summary(
+                content=request.message,
+                stream=False,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens
+            )
+            
+            return ChatResponse(success=True, message=summary)
+        
+    except ValueError as e:
+        # 输入验证错误
+        logger.warning(f"输入验证失败: {e}")
+        return ChatResponse(success=False, error=str(e))
+    except Exception as e:
+        logger.error(f"生成小结失败: {e}", exc_info=True)
         return ChatResponse(success=False, error=str(e))
 
 

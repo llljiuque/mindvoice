@@ -19,7 +19,7 @@ llm:
   provider: perfxcloud-专线  # 服务提供商
   api_key: ""  # 请填入你的 API Key
   base_url: https://deepseek.perfxlab.cn/v1  # API 基础 URL
-  model: Qwen3-Next-80B-Instruct  # 模型名称
+  model: openai/Qwen3-Next-80B-Instruct  # 模型名称（使用 openai/ 前缀以支持自定义 OpenAI 兼容端点）
   max_context_tokens: 128000  # 最大上下文长度
 
 # 存储配置
@@ -36,6 +36,32 @@ audio:
   # 计算公式：chunk = rate × 时长（秒）
   # - 200ms: 16000 × 0.2 = 3200帧（推荐）
   # - 100ms: 16000 × 0.1 = 1600帧
+  
+  # VAD配置（语音活动检测，用于过滤静音，节约ASR成本）
+  vad:
+    enabled: false  # 是否启用VAD（默认关闭，向后兼容）
+    library: "webrtcvad"  # VAD库：webrtcvad
+    mode: 2  # WebRTC VAD敏感度：0-3，越高越严格（推荐2）
+    frame_duration_ms: 20  # VAD检测帧长度：10/20/30ms（推荐20ms）
+    
+    # 检测阈值（防止截断）
+    speech_start_threshold: 2       # 连续N个块检测到语音才开始发送（40ms，避免开头截断）
+    speech_end_threshold: 10        # 连续M个块静音才停止发送（200ms，避免中间截断）
+    min_speech_duration_ms: 200     # 最小语音时长（毫秒），过滤短噪音
+    
+    # 缓冲机制（防止截断）
+    pre_speech_padding_ms: 100      # 语音开始前缓冲（保留开头，避免"嗯..."被截断）
+    post_speech_padding_ms: 300     # 语音结束后缓冲（保留结尾，避免语气词被截断）
+  
+  # VAD说明：
+  # - 启用VAD可以过滤60-80%的静音音频，预计节约40-60%的ASR成本
+  # - mode参数：0最宽松（可能误检），3最严格（可能漏检），2为平衡值
+  # - 静音时不发送任何数据，最大化成本节约
+  # - 长时间静音（>60秒）可能需要重连，延迟200-500ms（可接受）
+  # - 如果发现截断问题，可以调整：
+  #   * 减小 speech_start_threshold（更快开始）
+  #   * 增大 speech_end_threshold（更晚结束）
+  #   * 增大 pre/post_speech_padding_ms（更多缓冲）
 
 # UI 配置
 ui:

@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class SoundDeviceRecorder(AudioRecorder):
-    """基于 sounddevice 的音频录制器"""
+    """基于 sounddevice 的音频录制器，支持可选的VAD过滤"""
     
-    def __init__(self, rate: int = 16000, channels: int = 1, chunk: int = 1024, device: Optional[int] = None):
+    def __init__(self, rate: int = 16000, channels: int = 1, chunk: int = 1024, 
+                 device: Optional[int] = None, vad_config: Optional[dict] = None):
         """初始化音频录制器
         
         Args:
@@ -23,6 +24,10 @@ class SoundDeviceRecorder(AudioRecorder):
             channels: 声道数
             chunk: 每次读取的帧数
             device: 音频设备ID，None表示使用默认设备
+            vad_config: VAD配置字典（可选），包含：
+                - enabled: 是否启用VAD
+                - mode: VAD敏感度（0-3）
+                - 其他VAD参数...
         """
         self.rate = rate
         self.channels = channels
@@ -39,6 +44,22 @@ class SoundDeviceRecorder(AudioRecorder):
         
         # 流式音频数据回调（用于实时 ASR）
         self.on_audio_chunk: Optional[Callable[[bytes], None]] = None
+        
+        # VAD过滤器（可选功能）
+        self.vad_filter = None
+        if vad_config:
+            try:
+                from .vad_filter import VADFilter
+                self.vad_filter = VADFilter(vad_config)
+                if self.vad_filter.enabled:
+                    logger.info("[音频] VAD过滤器已启用")
+            except ImportError as e:
+                logger.error(f"[音频] 导入VAD过滤器失败: {e}")
+                logger.error("[音频] 请确保已安装webrtcvad: pip install webrtcvad>=2.0.10")
+                self.vad_filter = None
+            except Exception as e:
+                logger.error(f"[音频] 初始化VAD过滤器失败: {e}", exc_info=True)
+                self.vad_filter = None
         
         # 统计信息
         self._chunk_count = 0
@@ -101,6 +122,11 @@ class SoundDeviceRecorder(AudioRecorder):
             self._chunk_count = 0
             self._total_bytes = 0
             self._callback_errors = 0
+            
+            # 重置VAD状态（如果启用）
+            if self.vad_filter and self.vad_filter.enabled:
+                self.vad_filter.reset()
+                logger.debug("[音频] VAD过滤器已重置")
             
             logger.info(f"[音频] 创建音频输入流: samplerate={self.rate}, channels={self.channels}, blocksize={self.chunk}, device={self.device}")
             self.stream = sd.InputStream(
@@ -232,6 +258,7 @@ class SoundDeviceRecorder(AudioRecorder):
             try:
                 data = self.audio_queue.get(timeout=0.1)
                 if not self.paused:
+                    # 保存到缓冲区（用于完整录音文件）
                     self.audio_buffer.extend(data)
                     consumed_chunks += 1
                     
@@ -242,7 +269,16 @@ class SoundDeviceRecorder(AudioRecorder):
                     # 实时发送音频数据块（用于流式 ASR）
                     if self.on_audio_chunk:
                         try:
-                            self.on_audio_chunk(data)
+                            # VAD过滤（如果启用）
+                            if self.vad_filter and self.vad_filter.enabled:
+                                # 通过VAD过滤器处理音频数据
+                                processed_data = self.vad_filter.process(data)
+                                # 只发送非静音数据
+                                if processed_data:
+                                    self.on_audio_chunk(processed_data)
+                            else:
+                                # VAD未启用，直接发送原始数据
+                                self.on_audio_chunk(data)
                         except Exception as e:
                             logger.error(f"[音频] 音频数据块回调错误: {e}", exc_info=True)
             except queue.Empty:
@@ -252,6 +288,14 @@ class SoundDeviceRecorder(AudioRecorder):
                 continue
         
         logger.info(f"[音频] 音频消费线程结束，共消费 {consumed_chunks} 个音频块")
+        
+        # 输出VAD统计信息（如果启用）
+        if self.vad_filter and self.vad_filter.enabled:
+            stats = self.vad_filter.get_stats()
+            logger.info(f"[VAD] 统计: 总帧数={stats['total_frames']}, "
+                       f"语音帧={stats['speech_frames']}, "
+                       f"过滤帧={stats['filtered_frames']}, "
+                       f"过滤率={stats['filter_rate']:.1f}%")
     
     def set_on_audio_chunk_callback(self, callback: Optional[Callable[[bytes], None]]):
         """设置音频数据块回调函数（用于流式 ASR）"""

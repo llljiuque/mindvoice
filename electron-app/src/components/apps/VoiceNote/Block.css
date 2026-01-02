@@ -29,6 +29,10 @@
   opacity: 1;
 }
 
+.block:hover .block-delete-btn {
+  opacity: 1;
+}
+
 .block-handle {
   opacity: 0;
   transition: all var(--transition-fast);
@@ -41,6 +45,37 @@
   height: 28px;
   margin-top: 0;
   border-radius: var(--radius-sm);
+}
+
+.block-delete-btn {
+  opacity: 0;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-tertiary);
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+}
+
+.block-delete-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  transform: translateY(-50%) scale(1.1);
+}
+
+.block-delete-btn:active {
+  transform: translateY(-50%) scale(0.95);
 }
 
 .block-handle:hover {
@@ -211,7 +246,17 @@
 
 .block-summary-container .block-content {
   color: var(--color-text-primary);
-  font-weight: 500;
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+/* 小结块内的标题（第一行）使用更大字号和粗体 */
+.block-summary-container .block-content::first-line {
+  font-size: 20px;
+  font-weight: 700;
+  color: #10b981;
+  letter-spacing: -0.2px;
 }
 
 /* Note-Info 特殊块样式 */

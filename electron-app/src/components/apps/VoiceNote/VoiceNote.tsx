@@ -14,6 +14,9 @@ interface BlockEditorHandle {
   getBlocks: () => any[];
   setBlocks: (blocks: any[]) => void;
   appendSummaryBlock: (summary: string) => void;
+  updateSummaryBlock: (summary: string) => void;
+  finalizeSummaryBlock: () => void;
+  removeSummaryBlock: () => void;
 }
 
 interface VoiceNoteProps {
@@ -56,7 +59,6 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
 }) => {
   const [showToolbar, setShowToolbar] = useState(false);
   const [toolbarPosition, setToolbarPosition] = useState({ top: 0, left: 0 });
-  const [noteInfo, setNoteInfo] = useState<NoteInfo | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const voiceNoteContentRef = useRef<HTMLDivElement>(null);
   
@@ -125,8 +127,8 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   };
   
   // 处理笔记信息变化
-  const handleNoteInfoChange = useCallback((info: NoteInfo) => {
-    setNoteInfo(info);
+  const handleNoteInfoChange = useCallback((_info: NoteInfo) => {
+    // 笔记信息变化时的处理（如果需要可以在这里添加逻辑）
   }, []);
   
   // 处理保存（添加结束时间）
@@ -149,9 +151,13 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
     setIsSummarizing(true);
     
     try {
-      // 获取所有blocks内容（排除note-info）
+      // 获取所有blocks内容（排除note-info和已有的小结块）
       const blocks = blockEditorRef.current.getBlocks();
-      const contentBlocks = blocks.filter((b: any) => b.type !== 'note-info' && b.content.trim());
+      const contentBlocks = blocks.filter((b: any) => 
+        b.type !== 'note-info' && 
+        !b.isSummary &&  // 忽略已有的小结块
+        b.content.trim()
+      );
       
       if (contentBlocks.length === 0) {
         alert('没有内容可以生成小结');
@@ -162,41 +168,78 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
       // 提取所有文本内容
       const allText = contentBlocks.map((b: any) => b.content).join('\n\n');
       
-      // 调用LLM API生成小结
-      const response = await fetch('http://127.0.0.1:8765/api/llm/simple-chat', {
+      // 先创建一个空的小结block，用于流式更新
+      blockEditorRef.current.appendSummaryBlock(''); // 先创建空block
+      
+      // 调用 SummaryAgent API 进行流式生成
+      const response = await fetch('http://127.0.0.1:8765/api/summary/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           message: allText,
-          system_prompt: `你是一个专业的会议记录员，擅长总结和提炼关键信息。
-请根据用户提供的会议记录或笔记内容，生成一个结构化的小结。
-
-要求：
-1. 提取关键要点和核心信息
-2. 组织成清晰的结构（如：背景、讨论要点、决策事项、待办事项等）
-3. 语言简洁明了，重点突出
-4. 如果有时间线信息，请保留
-5. 使用markdown格式，包含标题、列表等
-
-请直接输出小结内容，不要有其他多余的说明。`,
           temperature: 0.5,
           max_tokens: 2000,
+          stream: true,  // 启用流式输出
         }),
       });
       
-      const data = await response.json();
-      
-      if (data.success && data.message) {
-        // 将小结添加到新的block中
-        blockEditorRef.current.appendSummaryBlock(data.message);
-      } else {
-        alert(`生成小结失败: ${data.error || '未知错误'}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+      
+      // 处理流式响应
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('无法获取响应流');
+      }
+      
+      const decoder = new TextDecoder();
+      let summaryContent = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.chunk) {
+                summaryContent += parsed.chunk;
+                // 实时更新小结block
+                blockEditorRef.current.updateSummaryBlock(summaryContent);
+              }
+            } catch (e) {
+              console.warn('解析流式数据失败:', e);
+            }
+          }
+        }
+      }
+      
+      if (!summaryContent) {
+        alert('生成小结失败：未收到有效内容');
+        // 移除空的小结block
+        blockEditorRef.current.removeSummaryBlock();
+      } else {
+        // 生成完成，更新外部内容（保存到历史记录）
+        blockEditorRef.current.finalizeSummaryBlock();
+      }
+      
     } catch (error) {
       console.error('生成小结失败:', error);
       alert(`生成小结失败: ${error}`);
+      // 移除失败的小结block
+      if (blockEditorRef?.current) {
+        blockEditorRef.current.removeSummaryBlock();
+      }
     } finally {
       setIsSummarizing(false);
     }
