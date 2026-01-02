@@ -7,6 +7,8 @@ import { HistoryView } from './components/shared/HistoryView';
 import { SettingsView } from './components/shared/SettingsView';
 import { AboutView } from './components/shared/AboutView';
 import { Toast } from './components/shared/Toast';
+import { ErrorBanner, ErrorToast } from './components/shared/SystemErrorDisplay';
+import { SystemErrorInfo, ErrorCodes } from './utils/errorCodes';
 import './App.css';
 
 const API_BASE_URL = 'http://127.0.0.1:8765';
@@ -25,6 +27,7 @@ function App() {
   const [asrState, setAsrState] = useState<RecordingState>('idle');
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [systemError, setSystemError] = useState<SystemErrorInfo | null>(null);
   const [apiConnected, setApiConnected] = useState(false);
   const [activeView, setActiveView] = useState<AppView>('voice-note');
   const [records, setRecords] = useState<Record[]>([]);

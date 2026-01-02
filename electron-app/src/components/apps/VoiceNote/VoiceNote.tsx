@@ -151,7 +151,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
     setIsSummarizing(true);
     
     try {
-      // 获取所有blocks内容（排除note-info和已有的小结块）
+      // 获取所有blocks内容（排除已有的小结块）
       const blocks = blockEditorRef.current.getBlocks();
       const contentBlocks = blocks.filter((b: any) => 
         b.type !== 'note-info' && 
@@ -165,8 +165,27 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
         return;
       }
       
+      // 获取笔记信息
+      const noteInfo = blockEditorRef.current.getNoteInfo();
+      
+      // 构建包含笔记信息的完整消息
+      let fullMessage = '';
+      
+      // 添加笔记元数据（如果存在）
+      if (noteInfo) {
+        fullMessage += '【笔记信息】\n';
+        if (noteInfo.title) fullMessage += `标题: ${noteInfo.title}\n`;
+        if (noteInfo.type) fullMessage += `类型: ${noteInfo.type}\n`;
+        if (noteInfo.relatedPeople) fullMessage += `相关人员: ${noteInfo.relatedPeople}\n`;
+        if (noteInfo.location) fullMessage += `地点: ${noteInfo.location}\n`;
+        if (noteInfo.startTime) fullMessage += `开始时间: ${noteInfo.startTime}\n`;
+        if (noteInfo.endTime) fullMessage += `结束时间: ${noteInfo.endTime}\n`;
+        fullMessage += '\n【笔记内容】\n';
+      }
+      
       // 提取所有文本内容
-      const allText = contentBlocks.map((b: any) => b.content).join('\n\n');
+      const contentText = contentBlocks.map((b: any) => b.content).join('\n\n');
+      fullMessage += contentText;
       
       // 先创建一个空的小结block，用于流式更新
       blockEditorRef.current.appendSummaryBlock(''); // 先创建空block
@@ -178,7 +197,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          message: allText,
+          message: fullMessage,  // 包含笔记信息和内容
           temperature: 0.5,
           max_tokens: 2000,
           stream: true,  // 启用流式输出
