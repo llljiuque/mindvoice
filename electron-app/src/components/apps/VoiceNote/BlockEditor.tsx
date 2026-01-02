@@ -326,6 +326,9 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       });
       return updated;
     });
+    
+    // 返回更新后的 endTime，用于同步获取
+    return endTime;
   }, [onNoteInfoChange]);
 
   const getNoteInfo = useCallback((): NoteInfo | undefined => {
@@ -365,12 +368,16 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       // 添加小结块
       filtered.push(summaryBlock);
       
-      // 更新内容
-      const content = blocksToContent(filtered);
-      onContentChange?.(content, false);
-      
       // 确保底部有缓冲块
-      return ensureBottomBufferBlock(filtered);
+      const newBlocks = ensureBottomBufferBlock(filtered);
+      
+      // 延迟调用 onContentChange 到下一个事件循环，避免在渲染期间更新父组件
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      return newBlocks;
     });
   }, [onContentChange, ensureBottomBufferBlock]);
 
@@ -396,9 +403,11 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
 
   const finalizeSummaryBlock = useCallback(() => {
     setBlocks((prev) => {
-      // 生成完成，更新外部内容
-      const content = blocksToContent(prev);
-      onContentChange?.(content, false);
+      // 延迟调用 onContentChange 到下一个事件循环，避免在渲染期间更新父组件
+      setTimeout(() => {
+        const content = blocksToContent(prev);
+        onContentChange?.(content, false);
+      }, 0);
       return prev;
     });
   }, [onContentChange]);
@@ -407,11 +416,15 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     setBlocks((prev) => {
       const updated = prev.filter(b => !b.isSummary);
       
-      // 更新内容
-      const content = blocksToContent(updated);
-      onContentChange?.(content, false);
+      const newBlocks = ensureBottomBufferBlock(updated);
       
-      return ensureBottomBufferBlock(updated);
+      // 延迟调用 onContentChange 到下一个事件循环，避免在渲染期间更新父组件
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      return newBlocks;
     });
   }, [onContentChange, ensureBottomBufferBlock]);
 
@@ -463,9 +476,15 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       const updated = prev.map((b) =>
         b.id === blockId ? { ...b, content: newContent } : b
       );
-      const content = blocksToContent(updated);
-      onContentChange?.(content, false);
-      return ensureBottomBufferBlock(updated);
+      const newBlocks = ensureBottomBufferBlock(updated);
+      
+      // 延迟调用 onContentChange 到下一个事件循环，避免在渲染期间更新父组件
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      return newBlocks;
     });
   };
 
@@ -559,11 +578,15 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         return prev; // 不允许删除所有block
       }
       
-      // 更新内容
-      const content = blocksToContent(updated);
-      onContentChange?.(content, false);
+      const newBlocks = ensureBottomBufferBlock(updated);
       
-      return ensureBottomBufferBlock(updated);
+      // 延迟调用 onContentChange 到下一个事件循环，避免在渲染期间更新父组件
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      return newBlocks;
     });
   }, [onContentChange, ensureBottomBufferBlock]);
 

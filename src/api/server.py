@@ -9,7 +9,7 @@ import os
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Set, Optional
+from typing import Set, Optional, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,12 +22,14 @@ sys.path.insert(0, str(project_root))
 
 from src.core.config import Config
 from src.core.base import RecordingState
+from src.core.logger import get_logger
+from src.core.error_codes import SystemError, SystemErrorInfo
 from src.services.voice_service import VoiceService
 from src.services.llm_service import LLMService
 from src.utils.audio_recorder import SoundDeviceRecorder
 from src.agents import SummaryAgent
 
-logger = logging.getLogger(__name__)
+logger = get_logger("API")
 
 
 @asynccontextmanager
@@ -96,6 +98,7 @@ class StartRecordingResponse(BaseModel):
     """开始录音响应"""
     success: bool
     message: str
+    error: Optional[Dict[str, Any]] = None  # SystemErrorInfo 对象（错误时包含）
 
 
 class StopRecordingRequest(BaseModel):
@@ -125,6 +128,7 @@ class ListRecordsResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    error: Optional[Dict[str, Any]] = None  # SystemErrorInfo 对象
 
 
 class ChatMessage(BaseModel):
@@ -145,7 +149,7 @@ class ChatResponse(BaseModel):
     """聊天响应模型"""
     success: bool
     message: Optional[str] = None
-    error: Optional[str] = None
+    error: Optional[Dict[str, Any]] = None  # 可以是字符串或 SystemErrorInfo 对象
 
 
 class SimpleChatRequest(BaseModel):
@@ -250,7 +254,8 @@ def setup_voice_service():
             channels=config.get('audio.channels', 1),
             chunk=config.get('audio.chunk', 1024),
             device=audio_device,
-            vad_config=vad_config  # 传入VAD配置
+            vad_config=vad_config,  # 传入VAD配置
+            max_buffer_seconds=config.get('audio.max_buffer_seconds', 60)  # 缓冲区管理
         )
         
         # 初始化语音服务
@@ -271,9 +276,20 @@ def setup_voice_service():
         voice_service.set_on_state_change_callback(
             lambda state: broadcast({"type": "state_change", "state": state.value})
         )
-        voice_service.set_on_error_callback(
-            lambda error_type, msg: broadcast({"type": "error", "error_type": error_type, "message": msg})
-        )
+        
+        # 错误回调 - 传递完整的 SystemErrorInfo 对象
+        def on_error_callback(error_type: str, msg: str):
+            """错误回调，广播给所有前端连接"""
+            # 尝试从消息中提取 SystemErrorInfo（如果服务传递了完整对象）
+            # 目前先使用简单格式，后续可以扩展
+            broadcast({
+                "type": "error",
+                "error_type": error_type,
+                "message": msg,
+                # 未来可以在这里添加 error 字段传递 SystemErrorInfo 对象
+            })
+        
+        voice_service.set_on_error_callback(on_error_callback)
         
         logger.info("[API] 语音服务初始化完成")
     except Exception as e:
@@ -393,16 +409,42 @@ async def start_recording():
             )
     except Exception as e:
         logger.error(f"启动录音失败: {e}", exc_info=True)
-        # 识别音频设备错误，返回友好的错误消息
-        error_msg = str(e)
-        if "Invalid number of channels" in error_msg:
-            error_msg = "音频设备不支持单声道录音，请在设置中更换音频输入设备"
-        elif "PortAudioError" in error_msg or "Error opening" in error_msg:
-            error_msg = f"音频设备打开失败：{error_msg}。请检查音频设备设置或更换输入设备"
         
+        # 创建 SystemErrorInfo 对象
+        error_msg = str(e)
+        error_info = None
+        
+        # 根据错误类型创建相应的错误对象
+        if "Invalid number of channels" in error_msg or "单声道" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.AUDIO_DEVICE_FORMAT_NOT_SUPPORTED,
+                details="音频设备不支持单声道录音",
+                technical_info=error_msg
+            )
+        elif "PortAudioError" in error_msg or "Error opening" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.AUDIO_DEVICE_OPEN_FAILED,
+                details="无法打开音频设备",
+                technical_info=error_msg
+            )
+        elif "permission" in error_msg.lower() or "权限" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.AUDIO_DEVICE_PERMISSION_DENIED,
+                details="无音频设备访问权限",
+                technical_info=error_msg
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.AUDIO_STREAM_ERROR,
+                details="音频录制出现问题",
+                technical_info=error_msg
+            )
+        
+        # 返回包含 SystemErrorInfo 的响应
         return StartRecordingResponse(
             success=False,
-            message=error_msg
+            message=error_info.user_message,
+            error=error_info.to_dict()  # 需要在响应模型中添加 error 字段
         )
 
 
@@ -483,19 +525,35 @@ class SaveTextResponse(BaseModel):
     success: bool
     record_id: Optional[str] = None
     message: str
+    error: Optional[Dict[str, Any]] = None  # SystemErrorInfo 对象
 
 
 @app.post("/api/text/save", response_model=SaveTextResponse)
 async def save_text_directly(request: SaveTextRequest):
     """直接保存文本到历史记录（不依赖ASR会话）"""
     if not voice_service or not voice_service.storage_provider:
-        raise HTTPException(status_code=503, detail="存储服务未初始化")
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_CONNECTION_FAILED,
+            details="存储服务未初始化",
+            technical_info="voice_service or storage_provider is None"
+        )
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
     
     try:
         if not request.text or not request.text.strip():
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="文本内容为空",
+                technical_info="Empty text content"
+            )
             return SaveTextResponse(
                 success=False,
-                message="文本内容为空"
+                message=error_info.user_message,
+                error=error_info.to_dict()
             )
         
         metadata = {
@@ -515,9 +573,47 @@ async def save_text_directly(request: SaveTextRequest):
             record_id=record_id,
             message="文本已保存"
         )
+    except IOError as e:
+        # 磁盘空间或权限错误
+        error_msg = str(e)
+        if "disk full" in error_msg.lower() or "no space" in error_msg.lower():
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_DISK_FULL,
+                details="磁盘空间不足",
+                technical_info=error_msg
+            )
+        elif "permission" in error_msg.lower():
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="没有写入权限",
+                technical_info=error_msg
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="写入失败",
+                technical_info=error_msg
+            )
+        
+        logger.error(f"保存文本失败: {e}", exc_info=True)
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
     except Exception as e:
-        logger.error(f"直接保存文本失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        # 其他未知错误
+        error_info = SystemErrorInfo(
+            SystemError.SYSTEM_INTERNAL_ERROR,
+            details=f"保存文本失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
+        logger.error(f"保存文本失败: {e}", exc_info=True)
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
 
 
 @app.get("/api/records", response_model=ListRecordsResponse)
@@ -530,7 +626,19 @@ async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
         app_type: 应用类型筛选（可选）：'voice-note', 'voice-chat', 'all'
     """
     if not voice_service or not voice_service.storage_provider:
-        raise HTTPException(status_code=503, detail="存储服务未初始化")
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_CONNECTION_FAILED,
+            details="存储服务未初始化",
+            technical_info="voice_service or storage_provider is None"
+        )
+        return ListRecordsResponse(
+            success=False,
+            records=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            error=error_info.to_dict()
+        )
     
     try:
         # 'all' 表示查询所有类型
@@ -572,8 +680,20 @@ async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
             offset=offset
         )
     except Exception as e:
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_READ_FAILED,
+            details=f"读取记录列表失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
         logger.error(f"列出记录失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return ListRecordsResponse(
+            success=False,
+            records=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            error=error_info.to_dict()
+        )
 
 
 @app.get("/api/records/{record_id}", response_model=RecordItem)
@@ -628,11 +748,29 @@ class DeleteRecordsRequest(BaseModel):
 async def delete_records(request: DeleteRecordsRequest):
     """批量删除记录"""
     if not voice_service or not voice_service.storage_provider:
-        raise HTTPException(status_code=503, detail="存储服务未初始化")
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_CONNECTION_FAILED,
+            details="存储服务未初始化",
+            technical_info="voice_service or storage_provider is None"
+        )
+        return {
+            "success": False,
+            "message": error_info.user_message,
+            "error": error_info.to_dict()
+        }
     
     try:
         if not request.record_ids:
-            return {"success": False, "message": "未选择要删除的记录"}
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="未选择要删除的记录",
+                technical_info="Empty record_ids list"
+            )
+            return {
+                "success": False,
+                "message": error_info.user_message,
+                "error": error_info.to_dict()
+            }
         
         # 检查存储提供者是否支持批量删除
         if hasattr(voice_service.storage_provider, 'delete_records'):
@@ -654,8 +792,18 @@ async def delete_records(request: DeleteRecordsRequest):
                 "deleted_count": deleted_count
             }
     except Exception as e:
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_WRITE_FAILED,
+            details=f"删除记录失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
         logger.error(f"批量删除记录失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "success": False,
+            "message": error_info.user_message,
+            "deleted_count": 0,
+            "error": error_info.to_dict()
+        }
 
 
 # ==================== 音频设备管理 API ====================
@@ -928,7 +1076,15 @@ async def chat(request: ChatRequest):
     }
     """
     if not llm_service or not llm_service.is_available():
-        raise HTTPException(status_code=503, detail="LLM服务不可用")
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="LLM服务不可用",
+            technical_info="llm_service is None or not available"
+        )
+        return ChatResponse(
+            success=False,
+            error=error_info.to_dict()
+        )
     
     try:
         # 转换消息格式
@@ -945,8 +1101,42 @@ async def chat(request: ChatRequest):
         return ChatResponse(success=True, message=response)
         
     except Exception as e:
+        # LLM服务已经在内部进行了错误分类，这里捕获异常后创建错误信息
+        error_msg = str(e).lower()
+        
+        if "rate" in error_msg or "limit" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_RATE_LIMIT,
+                details="请求频率超限",
+                technical_info=str(e)
+            )
+        elif "auth" in error_msg or "401" in error_msg or "403" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_AUTH_FAILED,
+                details="认证失败",
+                technical_info=str(e)
+            )
+        elif "timeout" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_REQUEST_TIMEOUT,
+                details="请求超时",
+                technical_info=str(e)
+            )
+        elif "quota" in error_msg or "balance" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_QUOTA_EXCEEDED,
+                details="配额已用完",
+                technical_info=str(e)
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_SERVICE_UNAVAILABLE,
+                details=f"LLM对话失败: {str(e)}",
+                technical_info=f"{type(e).__name__}: {str(e)}"
+            )
+        
         logger.error(f"LLM对话失败: {e}", exc_info=True)
-        return ChatResponse(success=False, error=str(e))
+        return ChatResponse(success=False, error=error_info.to_dict())
 
 
 @app.post("/api/llm/simple-chat", response_model=ChatResponse)
@@ -968,7 +1158,15 @@ async def simple_chat(request: SimpleChatRequest):
     data: [DONE]
     """
     if not llm_service or not llm_service.is_available():
-        raise HTTPException(status_code=503, detail="LLM服务不可用")
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="LLM服务不可用",
+            technical_info="llm_service is None or not available"
+        )
+        return ChatResponse(
+            success=False,
+            error=error_info.to_dict()
+        )
     
     try:
         # 判断是否使用流式输出
@@ -988,7 +1186,13 @@ async def simple_chat(request: SimpleChatRequest):
                     yield "data: [DONE]\n\n"
                 except Exception as e:
                     logger.error(f"流式响应失败: {e}", exc_info=True)
-                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                    # 发送结构化错误信息
+                    error_info = SystemErrorInfo(
+                        SystemError.LLM_SERVICE_UNAVAILABLE,
+                        details=f"流式响应失败: {str(e)}",
+                        technical_info=f"{type(e).__name__}: {str(e)}"
+                    )
+                    yield f"data: {json.dumps({'error': error_info.to_dict()}, ensure_ascii=False)}\n\n"
             
             return StreamingResponse(
                 generate(),
@@ -1012,8 +1216,35 @@ async def simple_chat(request: SimpleChatRequest):
             return ChatResponse(success=True, message=response)
         
     except Exception as e:
+        error_msg = str(e).lower()
+        
+        if "rate" in error_msg or "limit" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_RATE_LIMIT,
+                details="请求频率超限",
+                technical_info=str(e)
+            )
+        elif "auth" in error_msg or "401" in error_msg or "403" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_AUTH_FAILED,
+                details="认证失败",
+                technical_info=str(e)
+            )
+        elif "timeout" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_REQUEST_TIMEOUT,
+                details="请求超时",
+                technical_info=str(e)
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_SERVICE_UNAVAILABLE,
+                details=f"LLM简单对话失败: {str(e)}",
+                technical_info=f"{type(e).__name__}: {str(e)}"
+            )
+        
         logger.error(f"LLM简单对话失败: {e}", exc_info=True)
-        return ChatResponse(success=False, error=str(e))
+        return ChatResponse(success=False, error=error_info.to_dict())
 
 
 @app.post("/api/summary/generate")
@@ -1032,7 +1263,15 @@ async def generate_summary(request: SimpleChatRequest):
     - 支持流式和非流式输出
     """
     if not summary_agent or not summary_agent.is_available():
-        raise HTTPException(status_code=503, detail="小结服务不可用")
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="小结服务不可用",
+            technical_info="summary_agent is None or not available"
+        )
+        return ChatResponse(
+            success=False,
+            error=error_info.to_dict()
+        )
     
     try:
         # 判断是否使用流式输出
@@ -1052,7 +1291,12 @@ async def generate_summary(request: SimpleChatRequest):
                     yield "data: [DONE]\n\n"
                 except Exception as e:
                     logger.error(f"流式生成小结失败: {e}", exc_info=True)
-                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                    error_info = SystemErrorInfo(
+                        SystemError.LLM_SERVICE_UNAVAILABLE,
+                        details=f"流式生成小结失败: {str(e)}",
+                        technical_info=f"{type(e).__name__}: {str(e)}"
+                    )
+                    yield f"data: {json.dumps({'error': error_info.to_dict()}, ensure_ascii=False)}\n\n"
             
             return StreamingResponse(
                 generate(),
@@ -1077,10 +1321,36 @@ async def generate_summary(request: SimpleChatRequest):
     except ValueError as e:
         # 输入验证错误
         logger.warning(f"输入验证失败: {e}")
-        return ChatResponse(success=False, error=str(e))
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_INVALID_CONTENT,
+            details="输入内容验证失败",
+            technical_info=str(e)
+        )
+        return ChatResponse(success=False, error=error_info.to_dict())
     except Exception as e:
+        error_msg = str(e).lower()
+        
+        if "rate" in error_msg or "limit" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_RATE_LIMIT,
+                details="请求频率超限",
+                technical_info=str(e)
+            )
+        elif "timeout" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_REQUEST_TIMEOUT,
+                details="请求超时",
+                technical_info=str(e)
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_SERVICE_UNAVAILABLE,
+                details=f"生成小结失败: {str(e)}",
+                technical_info=f"{type(e).__name__}: {str(e)}"
+            )
+        
         logger.error(f"生成小结失败: {e}", exc_info=True)
-        return ChatResponse(success=False, error=str(e))
+        return ChatResponse(success=False, error=error_info.to_dict())
 
 
 # ==================== WebSocket API ====================

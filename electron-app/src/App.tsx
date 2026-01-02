@@ -8,7 +8,7 @@ import { SettingsView } from './components/shared/SettingsView';
 import { AboutView } from './components/shared/AboutView';
 import { Toast } from './components/shared/Toast';
 import { ErrorBanner, ErrorToast } from './components/shared/SystemErrorDisplay';
-import { SystemErrorInfo, ErrorCodes } from './utils/errorCodes';
+import { SystemErrorInfo, ErrorCodes, ErrorCategory } from './utils/errorCodes';
 import './App.css';
 
 const API_BASE_URL = 'http://127.0.0.1:8765';
@@ -51,10 +51,14 @@ function App() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const blockEditorRef = useRef<{ 
     appendAsrText: (text: string, isDefiniteUtterance?: boolean, timeInfo?: any) => void;
-    setNoteInfoEndTime: () => void;
+    setNoteInfoEndTime: () => string;
     getNoteInfo: () => any;
     getBlocks: () => any[];
     setBlocks: (blocks: any[]) => void;
+    appendSummaryBlock: (summary: string) => void;
+    updateSummaryBlock: (summary: string) => void;
+    finalizeSummaryBlock: () => void;
+    removeSummaryBlock: () => void;
   } | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -142,12 +146,24 @@ function App() {
       const connected = response.ok;
       setApiConnected(connected);
       if (!connected) {
-        setError('无法连接到API服务器');
+        setSystemError({
+          code: ErrorCodes.API_SERVER_UNAVAILABLE,
+          category: ErrorCategory.NETWORK,
+          message: 'API服务器不可用',
+          user_message: '无法连接到API服务器，请确认后端服务已启动',
+          suggestion: '1. 确认后端服务已启动\n2. 检查端口8765是否被占用\n3. 查看服务器日志'
+        });
       }
       return connected;
     } catch (e) {
       setApiConnected(false);
-      setError('无法连接到API服务器');
+      setSystemError({
+        code: ErrorCodes.NETWORK_UNREACHABLE,
+        category: ErrorCategory.NETWORK,
+        message: '网络不可达',
+        user_message: '网络连接失败，请检查网络连接',
+        suggestion: '1. 检查网络连接\n2. 确认API服务器地址正确\n3. 检查防火墙设置'
+      });
       return false;
     }
   };
@@ -175,6 +191,7 @@ function App() {
 
       ws.onopen = () => {
         setError(null);
+        setSystemError(null);
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
@@ -212,26 +229,53 @@ function App() {
               setAsrState(data.state);
               break;
             case 'error':
-              setError(`${data.error_type || '错误'}: ${data.message || '未知错误'}`);
+              // 如果后端返回了完整的 SystemErrorInfo 对象
+              if (data.error && typeof data.error === 'object' && data.error.code) {
+                setSystemError(data.error);
+              } else {
+                // 兼容旧格式，创建一个简单的错误对象
+                setError(`${data.error_type || '错误'}: ${data.message || '未知错误'}`);
+              }
               break;
             default:
               console.warn('未知的WebSocket消息类型:', data.type);
           }
         } catch (e) {
           console.error('解析WebSocket消息失败:', e);
-          setError('WebSocket消息解析失败');
+          setSystemError({
+            code: ErrorCodes.WEBSOCKET_CONNECTION_FAILED,
+            category: ErrorCategory.NETWORK,
+            message: 'WebSocket消息解析失败',
+            user_message: '接收到无效的消息格式',
+            suggestion: '这可能是服务器错误，请重试或联系技术支持'
+          });
         }
       };
 
       ws.onerror = () => {
         if (!apiConnected) {
-          setError('WebSocket连接错误');
+          setSystemError({
+            code: ErrorCodes.WEBSOCKET_CONNECTION_FAILED,
+            category: ErrorCategory.NETWORK,
+            message: 'WebSocket连接错误',
+            user_message: '实时连接失败，请刷新页面',
+            suggestion: '1. 刷新页面重试\n2. 检查API服务器状态\n3. 查看浏览器控制台日志'
+          });
         }
       };
 
       ws.onclose = () => {
         wsRef.current = null;
         if (apiConnected && !reconnectTimeoutRef.current) {
+          // 连接断开，显示提示（但会自动重连）
+          setSystemError({
+            code: ErrorCodes.WEBSOCKET_DISCONNECTED,
+            category: ErrorCategory.NETWORK,
+            message: 'WebSocket连接断开',
+            user_message: '连接已断开，正在尝试重连...',
+            suggestion: '系统会自动重连，请稍候'
+          });
+          
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectTimeoutRef.current = null;
             connectWebSocket();
@@ -272,25 +316,50 @@ function App() {
   // ASR控制函数
   const callAsrApi = async (endpoint: string) => {
     if (!apiConnected) {
-      setError('API未连接');
+      setSystemError({
+        code: ErrorCodes.API_SERVER_UNAVAILABLE,
+        category: ErrorCategory.NETWORK,
+        message: 'API未连接',
+        user_message: 'API服务器未连接',
+        suggestion: '请确认后端服务已启动'
+      });
       return false;
     }
     try {
       const response = await fetch(`${API_BASE_URL}${endpoint}`, { method: 'POST' });
       const data = await response.json();
       if (!data.success) {
-        // 识别音频设备错误，使用 Toast 显示，并延长显示时间
-        const errorMsg = data.message || '操作失败';
-        if (errorMsg.includes('音频设备') || errorMsg.includes('PortAudio') || errorMsg.includes('单声道')) {
-          setToast({ message: errorMsg, type: 'error', duration: 6000 });
+        // 如果后端返回了完整的 SystemErrorInfo 对象
+        if (data.error && typeof data.error === 'object' && data.error.code) {
+          // 音频设备错误使用 Toast 显示（不阻塞界面）
+          if (data.error.code >= 2000 && data.error.code < 3000) {
+            setSystemError(data.error);
+            // 同时显示 Toast，3秒后自动清除错误
+            setTimeout(() => setSystemError(null), 3000);
+          } else {
+            setSystemError(data.error);
+          }
         } else {
-          setError(errorMsg);
+          // 兼容旧格式
+          const errorMsg = data.message || '操作失败';
+          if (errorMsg.includes('音频设备') || errorMsg.includes('PortAudio') || errorMsg.includes('单声道')) {
+            setToast({ message: errorMsg, type: 'error', duration: 6000 });
+          } else {
+            setError(errorMsg);
+          }
         }
         return false;
       }
       return true;
     } catch (e) {
-      setError(`操作失败: ${e}`);
+      setSystemError({
+        code: ErrorCodes.NETWORK_TIMEOUT,
+        category: ErrorCategory.NETWORK,
+        message: '操作失败',
+        user_message: '网络请求失败',
+        suggestion: '请检查网络连接并重试',
+        technical_info: String(e)
+      });
       return false;
     }
   };
@@ -433,10 +502,8 @@ function App() {
       });
       const data = await response.json();
       if (data.success) {
-        setToast({ message: '已保存到历史记录，可继续记录新内容', type: 'success' });
-        localStorage.removeItem('voiceNoteDraft');
-        setText('');
-        setInitialBlocks(undefined);
+        setToast({ message: '已保存到历史记录', type: 'success' });
+        // 保存成功后，不清空内容，让用户可以继续编辑或查看
         // 注意：不调用 endWorkSession()，让用户可以继续使用
       } else {
         setError(data.message || '保存失败');
@@ -476,9 +543,14 @@ function App() {
         // 获取笔记信息
         const noteInfo = blockEditorRef.current?.getNoteInfo?.();
         
-        // 先设置结束时间
+        // 先设置结束时间并获取返回的 endTime
+        let endTime: string | undefined;
         if (blockEditorRef.current?.setNoteInfoEndTime) {
-          blockEditorRef.current.setNoteInfoEndTime();
+          endTime = blockEditorRef.current.setNoteInfoEndTime();
+          // 手动设置 endTime（避免状态更新延迟）
+          if (noteInfo) {
+            noteInfo.endTime = endTime;
+          }
         }
         
         // 构建保存内容
@@ -518,10 +590,22 @@ function App() {
           setToast({ message: '当前笔记已保存，可以开始新笔记了', type: 'success' });
           // 保持工作会话活跃，用户可以继续记录
         } else {
-          setError(data.message || '保存失败');
+          // 使用 SystemErrorInfo
+          if (data.error && data.error.code) {
+            setSystemError(data.error);
+          } else {
+            setError(data.message || '保存失败');
+          }
         }
       } catch (e) {
-        setToast({ message: '保存失败，请重试', type: 'error' });
+        setSystemError({
+          code: ErrorCodes.NETWORK_TIMEOUT,
+          category: ErrorCategory.NETWORK,
+          message: '网络错误',
+          user_message: '保存失败，请检查网络连接',
+          suggestion: '1. 检查网络连接\n2. 重试保存操作\n3. 确认后端服务运行正常',
+          technical_info: String(e)
+        });
       }
     } else {
       // 如果没有内容，直接清空
@@ -548,10 +632,22 @@ function App() {
         setCurrentPage(page);
         setAppFilter(filter);
       } else {
-        setError('加载历史记录失败');
+        // 使用 SystemErrorInfo
+        if (data.error && data.error.code) {
+          setSystemError(data.error);
+        } else {
+          setError('加载历史记录失败');
+        }
       }
     } catch (e) {
-      setError(`加载历史记录失败: ${e}`);
+      setSystemError({
+        code: ErrorCodes.STORAGE_READ_FAILED,
+        category: ErrorCategory.STORAGE,
+        message: '读取失败',
+        user_message: '加载历史记录失败',
+        suggestion: '1. 检查网络连接\n2. 刷新页面重试\n3. 确认数据库文件完整',
+        technical_info: String(e)
+      });
     } finally {
       setLoadingRecords(false);
     }
@@ -571,10 +667,22 @@ function App() {
         // 重新加载当前页
         await loadRecords(currentPage);
       } else {
-        setError(data.message || '删除记录失败');
+        // 使用 SystemErrorInfo
+        if (data.error && data.error.code) {
+          setSystemError(data.error);
+        } else {
+          setError(data.message || '删除记录失败');
+        }
       }
     } catch (e) {
-      setError(`删除记录失败: ${e}`);
+      setSystemError({
+        code: ErrorCodes.STORAGE_WRITE_FAILED,
+        category: ErrorCategory.STORAGE,
+        message: '删除失败',
+        user_message: '删除记录失败',
+        suggestion: '1. 检查网络连接\n2. 重试删除操作\n3. 确认数据库文件未被锁定',
+        technical_info: String(e)
+      });
     }
   };
 
@@ -592,10 +700,24 @@ function App() {
           setInitialBlocks(undefined);
         }
         
+        // 切换到语音笔记视图
         setActiveView('voice-note');
+        
+        // 恢复工作会话（从历史记录加载相当于恢复工作）
+        startWorkSession('voice-note');
+        
+        // 提示用户已恢复工作
+        setToast({ message: '已恢复笔记，可以继续编辑或生成小结', type: 'info' });
       }
     } catch (e) {
-      setError(`加载记录失败: ${e}`);
+      setSystemError({
+        code: ErrorCodes.STORAGE_READ_FAILED,
+        category: ErrorCategory.STORAGE,
+        message: '读取失败',
+        user_message: '加载记录失败',
+        suggestion: '1. 检查网络连接\n2. 重试加载\n3. 确认记录ID正确',
+        technical_info: String(e)
+      });
     }
   };
 
@@ -613,6 +735,15 @@ function App() {
       />
       
       <div className="app-main">
+        {/* 系统错误展示 - 使用 ErrorBanner 显示（不阻塞界面） */}
+        {systemError && (
+          <ErrorBanner
+            error={systemError}
+            onClose={() => setSystemError(null)}
+          />
+        )}
+
+        {/* 旧的错误横幅（兼容） */}
         {error && <div className="error-banner">{error}</div>}
 
         {activeView === 'voice-note' && (
@@ -676,6 +807,15 @@ function App() {
           type={toast.type}
           duration={toast.duration}
           onClose={() => setToast(null)}
+        />
+      )}
+
+      {/* 系统错误 Toast - 用于音频设备等非阻塞性错误 */}
+      {systemError && systemError.code >= 2000 && systemError.code < 3000 && (
+        <ErrorToast
+          error={systemError}
+          duration={5000}
+          onClose={() => setSystemError(null)}
         />
       )}
     </div>

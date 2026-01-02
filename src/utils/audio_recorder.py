@@ -18,7 +18,8 @@ class SoundDeviceRecorder(AudioRecorder):
     """基于 sounddevice 的音频录制器，支持可选的VAD过滤"""
     
     def __init__(self, rate: int = 16000, channels: int = 1, chunk: int = 1024, 
-                 device: Optional[int] = None, vad_config: Optional[dict] = None):
+                 device: Optional[int] = None, vad_config: Optional[dict] = None,
+                 max_buffer_seconds: int = 60):
         """初始化音频录制器
         
         Args:
@@ -30,6 +31,7 @@ class SoundDeviceRecorder(AudioRecorder):
                 - enabled: 是否启用VAD
                 - mode: VAD敏感度（0-3）
                 - 其他VAD参数...
+            max_buffer_seconds: 最大缓冲时长（秒），超过后自动清理旧数据，默认60秒
         """
         self.rate = rate
         self.channels = channels
@@ -46,6 +48,11 @@ class SoundDeviceRecorder(AudioRecorder):
         
         # 流式音频数据回调（用于实时 ASR）
         self.on_audio_chunk: Optional[Callable[[bytes], None]] = None
+        
+        # 缓冲区管理配置
+        self.max_buffer_seconds = max_buffer_seconds
+        # 计算最大缓冲区大小（字节）：采样率 * 通道数 * 2字节(int16) * 秒数
+        self.max_buffer_size = rate * channels * 2 * max_buffer_seconds
         
         # VAD过滤器（可选功能）
         self.vad_filter = None
@@ -67,8 +74,10 @@ class SoundDeviceRecorder(AudioRecorder):
         self._chunk_count = 0
         self._total_bytes = 0
         self._callback_errors = 0
+        self._buffer_cleanups = 0  # 缓冲区清理次数
         
         logger.info(f"[音频] 初始化音频录制器: rate={rate}Hz, channels={channels}, chunk={chunk}, device={device}")
+        logger.info(f"[音频] 缓冲区管理: 最大缓冲{max_buffer_seconds}秒 (约{self.max_buffer_size // 1024 // 1024}MB)")
         logger.info(f"[音频] 音频设备信息: {sd.query_devices(kind='input')}")
     
     @staticmethod
@@ -142,6 +151,7 @@ class SoundDeviceRecorder(AudioRecorder):
             self._chunk_count = 0
             self._total_bytes = 0
             self._callback_errors = 0
+            self._buffer_cleanups = 0
             
             # 重置VAD状态（如果启用）
             if self.vad_filter and self.vad_filter.enabled:
@@ -335,6 +345,18 @@ class SoundDeviceRecorder(AudioRecorder):
                     self.audio_buffer.extend(data)
                     consumed_chunks += 1
                     
+                    # 缓冲区大小管理：如果超过最大限制，清理旧数据
+                    buffer_size = len(self.audio_buffer)
+                    if buffer_size > self.max_buffer_size:
+                        # 保留最新的一半数据，删除旧的一半
+                        keep_size = self.max_buffer_size // 2
+                        remove_size = buffer_size - keep_size
+                        self.audio_buffer = self.audio_buffer[remove_size:]
+                        self._buffer_cleanups += 1
+                        logger.info(f"[音频] 缓冲区清理: 删除了 {remove_size // 1024 // 1024}MB 旧数据, "
+                                  f"保留最近 {keep_size // 1024 // 1024}MB, "
+                                  f"累计清理 {self._buffer_cleanups} 次")
+                    
                     # 每100个块记录一次详细信息
                     if consumed_chunks % 100 == 0:
                         logger.debug(f"[音频] 消费音频块 #{consumed_chunks}, 大小={len(data)}字节, 缓冲区总大小={len(self.audio_buffer)}字节")
@@ -361,6 +383,8 @@ class SoundDeviceRecorder(AudioRecorder):
                 continue
         
         logger.info(f"[音频] 音频消费线程结束，共消费 {consumed_chunks} 个音频块")
+        if self._buffer_cleanups > 0:
+            logger.info(f"[音频] 缓冲区清理统计: 共清理 {self._buffer_cleanups} 次")
         
         # 输出VAD统计信息（如果启用）
         if self.vad_filter and self.vad_filter.enabled:

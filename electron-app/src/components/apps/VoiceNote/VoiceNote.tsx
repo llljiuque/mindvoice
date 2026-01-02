@@ -5,11 +5,12 @@ import { WelcomeScreen } from './WelcomeScreen';
 import { AppLayout } from '../../shared/AppLayout';
 import { StatusIndicator, AppStatusType } from '../../shared/StatusIndicator';
 import { AppButton, ButtonGroup } from '../../shared/AppButton';
+import { SystemErrorInfo } from '../../../utils/errorCodes';
 import './VoiceNote.css';
 
 interface BlockEditorHandle {
   appendAsrText: (text: string, isDefiniteUtterance?: boolean, timeInfo?: { startTime?: number; endTime?: number }) => void;
-  setNoteInfoEndTime: () => void;
+  setNoteInfoEndTime: () => string;
   getNoteInfo: () => NoteInfo | undefined;
   getBlocks: () => any[];
   setBlocks: (blocks: any[]) => void;
@@ -134,10 +135,13 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   // 处理保存（添加结束时间）
   const handleSave = () => {
     if (blockEditorRef?.current) {
-      // 设置结束时间
-      blockEditorRef.current.setNoteInfoEndTime();
-      // 获取更新后的笔记信息
+      // 设置结束时间并获取返回的 endTime
+      const endTime = blockEditorRef.current.setNoteInfoEndTime();
+      // 获取笔记信息并手动设置 endTime（避免状态更新延迟）
       const currentNoteInfo = blockEditorRef.current.getNoteInfo();
+      if (currentNoteInfo) {
+        currentNoteInfo.endTime = endTime;
+      }
       onSaveText(currentNoteInfo);
     } else {
       onSaveText();
@@ -146,8 +150,15 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
 
   // 处理生成小结
   const handleSummary = async () => {
-    if (!blockEditorRef?.current || isSummarizing) return;
+    if (!blockEditorRef?.current || isSummarizing) {
+      console.log('[VoiceNote] 小结按钮被点击，但条件不满足:', { 
+        hasBlockEditorRef: !!blockEditorRef?.current,
+        isSummarizing 
+      });
+      return;
+    }
     
+    console.log('[VoiceNote] 开始生成小结...');
     setIsSummarizing(true);
     
     try {
@@ -216,6 +227,8 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
       
       const decoder = new TextDecoder();
       let summaryContent = '';
+      let hasError = false;
+      let errorInfo: SystemErrorInfo | null = null;
       
       while (true) {
         const { done, value } = await reader.read();
@@ -231,6 +244,12 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
             
             try {
               const parsed = JSON.parse(data);
+              if (parsed.error) {
+                // 收到结构化错误信息
+                hasError = true;
+                errorInfo = parsed.error as SystemErrorInfo;
+                break;
+              }
               if (parsed.chunk) {
                 summaryContent += parsed.chunk;
                 // 实时更新小结block
@@ -241,25 +260,33 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
             }
           }
         }
+        if (hasError) break;
       }
       
-      if (!summaryContent) {
+      if (hasError && errorInfo) {
+        console.error('[VoiceNote] 生成小结失败:', errorInfo);
+        alert(`生成小结失败: ${errorInfo.user_message || errorInfo.message}\n${errorInfo.suggestion || ''}`);
+        blockEditorRef.current.removeSummaryBlock();
+      } else if (!summaryContent) {
+        console.warn('[VoiceNote] 生成小结失败：未收到有效内容');
         alert('生成小结失败：未收到有效内容');
         // 移除空的小结block
         blockEditorRef.current.removeSummaryBlock();
       } else {
+        console.log('[VoiceNote] 小结生成完成，内容长度:', summaryContent.length);
         // 生成完成，更新外部内容（保存到历史记录）
         blockEditorRef.current.finalizeSummaryBlock();
       }
       
     } catch (error) {
-      console.error('生成小结失败:', error);
+      console.error('[VoiceNote] 生成小结失败:', error);
       alert(`生成小结失败: ${error}`);
       // 移除失败的小结block
       if (blockEditorRef?.current) {
         blockEditorRef.current.removeSummaryBlock();
       }
     } finally {
+      console.log('[VoiceNote] 小结流程结束，重置isSummarizing状态');
       setIsSummarizing(false);
     }
   };
