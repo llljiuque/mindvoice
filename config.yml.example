@@ -72,3 +72,22 @@ ui:
   size:
     width: 500  # 窗口宽度
     height: 400  # 窗口高度
+
+# 日志配置
+logging:
+  level: INFO  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
+  console: true  # 是否输出到控制台
+  file: true  # 是否输出到文件
+  directory: logs  # 日志文件目录
+  max_file_size_mb: 10  # 单个日志文件最大大小（MB）
+  backup_count: 5  # 保留的日志文件数量
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"  # 日志格式
+  date_format: "%Y-%m-%d %H:%M:%S"  # 时间格式
+  
+  # 分组件日志级别（可选，覆盖全局级别）
+  components:
+    ASR: INFO  # ASR服务日志级别
+    LLM: INFO  # LLM服务日志级别
+    AudioDevice: INFO  # 音频设备日志级别
+    Network: INFO  # 网络相关日志级别
+    Storage: INFO  # 存储相关日志级别

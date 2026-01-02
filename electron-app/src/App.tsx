@@ -292,7 +292,29 @@ function App() {
     }
   };
 
-  const startAsr = () => callAsrApi('/api/recording/start');
+  const startAsr = async () => {
+    if (!apiConnected) {
+      setError('API未连接');
+      return false;
+    }
+    
+    // 防止重复调用：如果已经在录音中或正在停止，直接返回
+    if (asrState === 'recording' || asrState === 'stopping') {
+      console.log('[App] ASR已在运行中或停止中，忽略重复启动请求');
+      return false;
+    }
+    
+    // 立即更新状态为recording，防止重复点击
+    setAsrState('recording');
+    
+    const success = await callAsrApi('/api/recording/start');
+    if (!success) {
+      // 如果启动失败，重置状态为idle
+      setAsrState('idle');
+    }
+    return success;
+  };
+  
   const stopAsr = async () => {
     if (!apiConnected) return;
     

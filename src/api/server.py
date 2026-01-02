@@ -688,13 +688,18 @@ class SetAudioDeviceResponse(BaseModel):
 
 
 @app.get("/api/audio/devices", response_model=ListAudioDevicesResponse)
-async def list_audio_devices():
-    """获取所有输入音频设备列表"""
+async def list_audio_devices(refresh: bool = False):
+    """获取所有输入音频设备列表
+    
+    Args:
+        refresh: 是否强制刷新设备列表（重新扫描系统设备）
+    """
     if not recorder:
         raise HTTPException(status_code=503, detail="录音器未初始化")
     
     try:
-        devices = SoundDeviceRecorder.list_input_devices()
+        # 传递 refresh 参数以支持强制刷新设备列表
+        devices = SoundDeviceRecorder.list_input_devices(force_refresh=refresh)
         device_infos = [
             AudioDeviceInfo(
                 id=d['id'],

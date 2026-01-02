@@ -8,8 +8,10 @@ import sounddevice as sd
 import numpy as np
 from typing import Optional, Callable
 from ..core.base import AudioRecorder, RecordingState
+from ..core.logger import get_logger, get_system_logger
+from ..core.error_codes import SystemError, SystemErrorInfo
 
-logger = logging.getLogger(__name__)
+logger = get_logger("AudioDevice")
 
 
 class SoundDeviceRecorder(AudioRecorder):
@@ -70,13 +72,29 @@ class SoundDeviceRecorder(AudioRecorder):
         logger.info(f"[音频] 音频设备信息: {sd.query_devices(kind='input')}")
     
     @staticmethod
-    def list_input_devices() -> list[dict]:
+    def list_input_devices(force_refresh: bool = False) -> list[dict]:
         """获取所有输入音频设备列表
+        
+        Args:
+            force_refresh: 是否强制刷新设备列表（重新初始化 PortAudio）
         
         Returns:
             设备列表，每个设备包含 id, name, channels, samplerate 等信息
         """
         try:
+            # 如果需要强制刷新，重新初始化 PortAudio
+            # 这会重新扫描系统的音频设备
+            if force_refresh:
+                try:
+                    # 通过创建一个临时流来触发设备重新扫描
+                    # 这是 sounddevice 推荐的刷新设备列表的方法
+                    sd._terminate()
+                    sd._initialize()
+                    logger.info("[音频] 已强制刷新音频设备列表")
+                except Exception as refresh_error:
+                    logger.warning(f"[音频] 强制刷新设备列表时出现警告: {refresh_error}")
+                    # 即使刷新失败，仍然尝试获取设备列表
+            
             all_devices = sd.query_devices()
             result = []
             for device in all_devices:
@@ -110,6 +128,8 @@ class SoundDeviceRecorder(AudioRecorder):
     
     def start_recording(self) -> bool:
         """开始录音"""
+        sys_logger = get_system_logger()
+        
         if self.state != RecordingState.IDLE:
             logger.warning(f"[音频] 无法开始录音: 当前状态为 {self.state.value}")
             return False
@@ -129,15 +149,56 @@ class SoundDeviceRecorder(AudioRecorder):
                 logger.debug("[音频] VAD过滤器已重置")
             
             logger.info(f"[音频] 创建音频输入流: samplerate={self.rate}, channels={self.channels}, blocksize={self.chunk}, device={self.device}")
-            self.stream = sd.InputStream(
-                samplerate=self.rate,
-                channels=self.channels,
-                dtype=np.int16,
-                blocksize=self.chunk,
-                device=self.device,
-                callback=self._audio_callback
-            )
-            self.stream.start()
+            
+            try:
+                self.stream = sd.InputStream(
+                    samplerate=self.rate,
+                    channels=self.channels,
+                    dtype=np.int16,
+                    blocksize=self.chunk,
+                    device=self.device,
+                    callback=self._audio_callback
+                )
+                self.stream.start()
+            except sd.PortAudioError as e:
+                # PortAudio特定错误处理
+                error_msg = str(e)
+                if "device" in error_msg.lower() or "找不到" in error_msg or "not found" in error_msg.lower():
+                    error_info = SystemErrorInfo(
+                        SystemError.AUDIO_DEVICE_NOT_FOUND,
+                        details=f"音频设备不可用: {error_msg}",
+                        technical_info=f"PortAudioError: {error_msg}, device_id={self.device}"
+                    )
+                elif "busy" in error_msg.lower() or "占用" in error_msg:
+                    error_info = SystemErrorInfo(
+                        SystemError.AUDIO_DEVICE_BUSY,
+                        details=f"音频设备被占用: {error_msg}",
+                        technical_info=f"PortAudioError: {error_msg}"
+                    )
+                elif "permission" in error_msg.lower() or "权限" in error_msg:
+                    error_info = SystemErrorInfo(
+                        SystemError.AUDIO_DEVICE_PERMISSION_DENIED,
+                        details=f"无音频设备权限: {error_msg}",
+                        technical_info=f"PortAudioError: {error_msg}"
+                    )
+                elif "format" in error_msg.lower() or "单声道" in error_msg:
+                    error_info = SystemErrorInfo(
+                        SystemError.AUDIO_DEVICE_FORMAT_NOT_SUPPORTED,
+                        details=f"音频格式不支持: {error_msg}",
+                        technical_info=f"PortAudioError: {error_msg}, rate={self.rate}, channels={self.channels}"
+                    )
+                else:
+                    error_info = SystemErrorInfo(
+                        SystemError.AUDIO_DEVICE_OPEN_FAILED,
+                        details=f"无法打开音频设备: {error_msg}",
+                        technical_info=f"PortAudioError: {error_msg}"
+                    )
+                
+                sys_logger.log_error("AudioDevice", error_info)
+                logger.error(f"[音频] 打开音频设备失败: {e}", exc_info=True)
+                self.state = RecordingState.IDLE
+                raise
+            
             logger.info("[音频] 音频流已启动")
             
             self.thread = threading.Thread(target=self._consume_audio, daemon=True)
@@ -146,8 +207,20 @@ class SoundDeviceRecorder(AudioRecorder):
             
             self.state = RecordingState.RECORDING
             logger.info("[音频] 录音已开始，状态: RECORDING")
+            
+            sys_logger.log_audio_event("开始录音", 
+                                       device=self.device, 
+                                       rate=self.rate, 
+                                       channels=self.channels)
             return True
+            
         except Exception as e:
+            error_info = SystemErrorInfo(
+                SystemError.AUDIO_STREAM_ERROR,
+                details=f"启动录音失败: {str(e)}",
+                technical_info=f"{type(e).__name__}: {str(e)}"
+            )
+            sys_logger.log_error("AudioDevice", error_info)
             logger.error(f"[音频] 启动录音失败: {e}", exc_info=True)
             self.state = RecordingState.IDLE
             raise  # 重新抛出异常，让上层处理

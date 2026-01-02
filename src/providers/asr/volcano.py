@@ -11,8 +11,10 @@ import json
 import logging
 from typing import Dict, Any, Optional, Callable
 from ..asr.base_asr import BaseASRProvider
+from ...core.logger import get_logger
+from ...core.error_codes import SystemError, SystemErrorInfo
 
-logger = logging.getLogger(__name__)
+logger = get_logger("ASR.Volcano")
 
 # 火山ASR协议相关常量
 class ProtocolVersion:
@@ -267,6 +269,9 @@ class VolcanoASRProvider(BaseASRProvider):
     
     def initialize(self, config: Dict[str, Any]) -> bool:
         """初始化火山引擎 ASR"""
+        from ...core import get_system_logger
+        sys_logger = get_system_logger()
+        
         self.base_url = config.get('base_url', 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel')
         self.app_id = config.get('app_id', '')
         self.app_key = config.get('app_key', '') or config.get('app_id', '')
@@ -274,11 +279,23 @@ class VolcanoASRProvider(BaseASRProvider):
         self.enable_nonstream = config.get('enable_nonstream', False)
         
         if not self.access_key or not self.access_key.strip():
+            error_info = SystemErrorInfo(
+                SystemError.ASR_NOT_CONFIGURED,
+                details="缺少 access_key",
+                technical_info="config.yml: asr.access_key is empty"
+            )
+            sys_logger.log_error("ASR", error_info)
             logger.error("[ASR-Init] ✗ 配置不完整：缺少 access_key")
             logger.error("[ASR-Init] 请检查 config.yml 中的 asr.access_key 配置")
             return False
         
         if not self.app_key or not self.app_key.strip():
+            error_info = SystemErrorInfo(
+                SystemError.ASR_NOT_CONFIGURED,
+                details="缺少 app_key 或 app_id",
+                technical_info="config.yml: asr.app_key/app_id is empty"
+            )
+            sys_logger.log_error("ASR", error_info)
             logger.error("[ASR-Init] ✗ 配置不完整：缺少 app_key 或 app_id")
             logger.error("[ASR-Init] 请检查 config.yml 中的 asr.app_key 或 asr.app_id 配置")
             return False
@@ -289,16 +306,35 @@ class VolcanoASRProvider(BaseASRProvider):
         logger.info(f"[ASR-Init] access_key=已设置 ({len(self.access_key)} 字符)")
         logger.info(f"[ASR-Init] enable_nonstream={'开启' if self.enable_nonstream else '关闭'}")
         
+        sys_logger.log_asr_event("ASR初始化成功", 
+                                 provider="volcano", 
+                                 base_url=self.base_url)
+        
         return super().initialize(config)
     
     async def _connect(self) -> bool:
         """连接 ASR 服务"""
+        from ...core import get_system_logger
+        sys_logger = get_system_logger()
+        
         # 验证凭证格式
         if not self.access_key or not self.access_key.strip():
+            error_info = SystemErrorInfo(
+                SystemError.ASR_AUTH_FAILED,
+                details="access_key 为空",
+                technical_info="Empty access_key in config"
+            )
+            sys_logger.log_error("ASR", error_info)
             logger.error("[ASR-WS] ✗ 认证失败: access_key 为空，请检查 config.yml")
             return False
         
         if not self.app_key or not self.app_key.strip():
+            error_info = SystemErrorInfo(
+                SystemError.ASR_AUTH_FAILED,
+                details="app_key 为空",
+                technical_info="Empty app_key in config"
+            )
+            sys_logger.log_error("ASR", error_info)
             logger.error("[ASR-WS] ✗ 认证失败: app_key 为空，请检查 config.yml")
             return False
         
@@ -326,12 +362,27 @@ class VolcanoASRProvider(BaseASRProvider):
                 logger.info(f"[ASR-WS] 协议: {self.conn.protocol if hasattr(self.conn, 'protocol') else 'wss'}")
                 logger.info(f"[ASR-WS] 状态: {'已连接' if not self.conn.closed else '已关闭'}")
                 
+                sys_logger.log_asr_event("WebSocket连接成功", 
+                                         url=self.base_url, 
+                                         attempt=attempt+1)
+                
                 self._loop = asyncio.get_event_loop()
                 return True
                 
             except aiohttp.ClientResponseError as e:
                 error_msg = f"HTTP错误 {e.status}: {e.message}"
                 if e.status == 403:
+                    error_info = SystemErrorInfo(
+                        SystemError.ASR_AUTH_FAILED,
+                        details="认证失败，请检查access_key和app_key",
+                        technical_info=f"HTTP 403: {e.message}"
+                    )
+                    sys_logger.log_error("ASR", error_info, {
+                        "status": e.status,
+                        "attempt": attempt + 1,
+                        "access_key_prefix": self.access_key[:8]
+                    })
+                    
                     error_msg += " (认证失败)"
                     logger.error(f"[ASR-WS] ✗ {error_msg}")
                     logger.error(f"[ASR-WS] 请检查：")
@@ -340,7 +391,14 @@ class VolcanoASRProvider(BaseASRProvider):
                     logger.error(f"[ASR-WS]   3. 凭证是否有访问 ASR 服务的权限")
                     logger.error(f"[ASR-WS]   4. access_key 前缀: {self.access_key[:8]}...")
                     logger.error(f"[ASR-WS]   5. app_key 前缀: {self.app_key[:8]}...")
+                    return False  # 认证失败不重试
                 else:
+                    error_info = SystemErrorInfo(
+                        SystemError.ASR_SERVICE_UNAVAILABLE,
+                        details=f"HTTP {e.status}",
+                        technical_info=error_msg
+                    )
+                    sys_logger.log_error("ASR", error_info, {"attempt": attempt + 1})
                     logger.error(f"[ASR-WS] ✗ {error_msg} (第{attempt + 1}次尝试)")
                 
                 if attempt < max_retries - 1:
@@ -351,6 +409,14 @@ class VolcanoASRProvider(BaseASRProvider):
                     return False
                     
             except asyncio.TimeoutError as e:
+                error_info = SystemErrorInfo(
+                    SystemError.ASR_REQUEST_TIMEOUT,
+                    details=f"连接超时 (尝试 {attempt + 1}/{max_retries})",
+                    technical_info=str(e)
+                )
+                if attempt == max_retries - 1:
+                    sys_logger.log_error("ASR", error_info)
+                
                 logger.warning(f"[ASR-WS] ⚠ 连接超时 (第{attempt + 1}次尝试)")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
@@ -360,6 +426,14 @@ class VolcanoASRProvider(BaseASRProvider):
                     return False
                     
             except Exception as e:
+                error_info = SystemErrorInfo(
+                    SystemError.WEBSOCKET_CONNECTION_FAILED,
+                    details=f"连接错误: {str(e)}",
+                    technical_info=f"{type(e).__name__}: {str(e)}"
+                )
+                if attempt == max_retries - 1:
+                    sys_logger.log_error("ASR", error_info)
+                
                 logger.warning(f"[ASR-WS] ⚠ 连接错误 (第{attempt + 1}次尝试): {str(e)}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)

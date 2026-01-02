@@ -45,16 +45,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
   const [asrSaving, setAsrSaving] = useState(false);
 
   // 加载音频设备列表
-  const loadDevices = async () => {
+  const loadDevices = async (forceRefresh: boolean = false) => {
     if (!apiConnected) return;
     
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/audio/devices`);
+      // 添加 refresh 查询参数以支持强制刷新设备列表
+      const url = forceRefresh 
+        ? `${API_BASE_URL}/api/audio/devices?refresh=true`
+        : `${API_BASE_URL}/api/audio/devices`;
+      
+      const response = await fetch(url);
       const data = await response.json();
       if (data.success) {
         setDevices(data.devices);
         setCurrentDevice(data.current_device);
+        if (forceRefresh) {
+          setMessage({ text: '设备列表已刷新', type: 'success' });
+          setTimeout(() => setMessage(null), 3000);
+        }
       } else {
         setMessage({ text: '加载设备列表失败', type: 'error' });
       }

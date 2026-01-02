@@ -1,0 +1,327 @@
+/* 系统错误展示组件样式 */
+
+.system-error-display {
+  background: #fff;
+  border: 1px solid #e74c3c;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.15);
+  max-width: 600px;
+  margin: 20px auto;
+  overflow: hidden;
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.system-error-header {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  color: white;
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.system-error-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.error-icon {
+  font-size: 24px;
+}
+
+.error-code {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+}
+
+.error-close-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.error-close-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.system-error-content {
+  padding: 20px;
+}
+
+.error-user-message {
+  font-size: 16px;
+  color: #2c3e50;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.error-details {
+  background: #f8f9fa;
+  border-left: 3px solid #e74c3c;
+  padding: 12px;
+  margin-bottom: 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #555;
+}
+
+.error-suggestion {
+  background: #e8f5e9;
+  border-left: 3px solid #4caf50;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.error-suggestion strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #2e7d32;
+}
+
+.suggestion-content {
+  font-size: 14px;
+  color: #424242;
+}
+
+.suggestion-line {
+  padding: 4px 0;
+  line-height: 1.6;
+}
+
+.error-technical-info {
+  margin-top: 16px;
+  border-top: 1px solid #e0e0e0;
+  padding-top: 16px;
+}
+
+.error-technical-info summary {
+  cursor: pointer;
+  color: #7f8c8d;
+  font-size: 13px;
+  user-select: none;
+}
+
+.error-technical-info summary:hover {
+  color: #555;
+}
+
+.error-technical-info pre {
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  color: #333;
+  font-family: 'Courier New', monospace;
+}
+
+.system-error-actions {
+  padding: 16px 20px;
+  background: #f8f9fa;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.error-action-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.retry-btn {
+  background: #3498db;
+  color: white;
+}
+
+.retry-btn:hover {
+  background: #2980b9;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+}
+
+.close-btn {
+  background: #95a5a6;
+  color: white;
+}
+
+.close-btn:hover {
+  background: #7f8c8d;
+}
+
+/* 错误横幅样式 */
+.error-banner {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  color: white;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 2px 8px rgba(231, 76, 60, 0.3);
+  animation: slideDown 0.3s ease-out;
+}
+
+.banner-icon {
+  font-size: 20px;
+}
+
+.banner-message {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.banner-code {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+}
+
+.banner-close-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.banner-close-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 错误Toast样式 */
+.error-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: white;
+  border: 1px solid #e74c3c;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 400px;
+  animation: slideIn 0.3s ease-out;
+  z-index: 10000;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.toast-content {
+  flex: 1;
+}
+
+.toast-message {
+  font-size: 14px;
+  color: #2c3e50;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+.toast-code {
+  font-size: 11px;
+  color: #7f8c8d;
+  font-family: 'Courier New', monospace;
+}
+
+.toast-close-btn {
+  background: none;
+  border: none;
+  color: #7f8c8d;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.toast-close-btn:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .system-error-display {
+    margin: 10px;
+    max-width: none;
+  }
+
+  .error-toast {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
+  }
+}
+
