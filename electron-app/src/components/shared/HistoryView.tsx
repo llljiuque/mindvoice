@@ -255,10 +255,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   <button
                     className="history-btn history-btn-load"
                     onClick={() => onLoadRecord(record.id)}
-                    title="查看"
-                    aria-label={`查看记录 ${record.id}`}
+                    title="恢复此任务并继续编辑"
+                    aria-label={`恢复记录 ${record.id}`}
                   >
-                    查看
+                    📝 恢复任务
                   </button>
                 </div>
               </div>

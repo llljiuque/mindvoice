@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Sidebar, AppView } from './components/shared/Sidebar';
 import { VoiceNote } from './components/apps/VoiceNote/VoiceNote';
 import { VoiceChat } from './components/apps/VoiceChat/VoiceChat';
@@ -9,10 +9,11 @@ import { AboutView } from './components/shared/AboutView';
 import { Toast } from './components/shared/Toast';
 import { ErrorBanner, ErrorToast } from './components/shared/SystemErrorDisplay';
 import { SystemErrorInfo, ErrorCodes, ErrorCategory } from './utils/errorCodes';
+import { AutoSaveService } from './services/AutoSaveService';
+import { VoiceNoteAdapter } from './services/adapters/VoiceNoteAdapter';
 import './App.css';
 
 const API_BASE_URL = 'http://127.0.0.1:8765';
-const WS_URL = 'ws://127.0.0.1:8765/ws';
 
 type RecordingState = 'idle' | 'recording' | 'stopping';
 
@@ -47,8 +48,6 @@ function App() {
   
   const [initialBlocks, setInitialBlocks] = useState<any[] | undefined>(undefined);
   
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const blockEditorRef = useRef<{ 
     appendAsrText: (text: string, isDefiniteUtterance?: boolean, timeInfo?: any) => void;
     setNoteInfoEndTime: () => string;
@@ -61,6 +60,32 @@ function App() {
     removeSummaryBlock: () => void;
   } | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const dbSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // ASR 所有者追踪：记录当前哪个 app 正在使用 ASR
+  const [asrOwner, setAsrOwner] = useState<AppView | null>(null);
+  
+  // 当前编辑的 block ID（用于判断临时状态）
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  
+  // 创建 VoiceNote 适配器
+  const voiceNoteAdapter = useMemo(() => {
+    return new VoiceNoteAdapter(
+      () => blockEditorRef.current?.getBlocks?.() || [],
+      () => blockEditorRef.current?.getNoteInfo?.()
+    );
+  }, []);
+  
+  // 创建 VoiceNote 自动保存服务
+  const voiceNoteAutoSave = useMemo(() => {
+    return new AutoSaveService('voice-note', voiceNoteAdapter);
+  }, [voiceNoteAdapter]);
+  
+  // 同步编辑状态到适配器
+  useEffect(() => {
+    voiceNoteAdapter.setEditingBlockId(editingBlockId);
+    voiceNoteAutoSave.setEditingItemId(editingBlockId);
+  }, [editingBlockId, voiceNoteAdapter, voiceNoteAutoSave]);
 
   // 开始工作会话
   const startWorkSession = (app: AppView): boolean => {
@@ -70,153 +95,337 @@ function App() {
     return true;
   };
 
-  // 结束工作会话
+  // 结束工作会话（内部函数，不直接调用）
   const endWorkSession = () => {
     setActiveWorkingApp(null);
     setIsWorkSessionActive(false);
+    // 清空 blocks 和重置 AutoSave
+    setInitialBlocks(undefined);
+    setText('');
+    if (activeView === 'voice-note') {
+      voiceNoteAutoSave.reset();
+    }
+  };
+
+  // EXIT退出：保存后退出（显示欢迎界面，开始全新记录）
+  const exitWithSave = async () => {
+    if (!apiConnected) {
+      setError('API未连接');
+      return;
+    }
+
+    if (asrState !== 'idle') {
+      setToast({ message: '请先停止ASR后再退出', type: 'info' });
+      return;
+    }
+
+    // 如果是 voice-note，保存所有数据（包括临时状态）
+    if (activeView === 'voice-note') {
+      try {
+        // 获取所有 blocks（不过滤临时状态）
+        const blocks = blockEditorRef.current?.getBlocks?.() || [];
+        const noteInfo = blockEditorRef.current?.getNoteInfo?.();
+        
+        // 检查是否有内容
+        const hasContent = blocks.some((b: any) => 
+          b.type !== 'note-info' && 
+          !b.isBufferBlock && 
+          (b.content?.trim() || b.type === 'image')
+        );
+        
+        if (hasContent) {
+          console.log('[Exit] 开始保存所有数据，block 数量:', blocks.length);
+          
+          // 过滤掉 note-info 和 buffer blocks，但保留所有其他 blocks（包括 isAsrWriting 的）
+          const allBlocks = blocks.filter((b: any) => 
+            b.type !== 'note-info' && !b.isBufferBlock
+          );
+          
+          console.log('[Exit] 实际保存的 block 数量:', allBlocks.length);
+          
+          // 构建文本内容
+          const textContent = allBlocks
+            .map((b: any) => {
+              if (b.isSummary) {
+                return `[SUMMARY_BLOCK_START]${b.content}[SUMMARY_BLOCK_END]`;
+              }
+              return b.content;
+            })
+            .filter((text: string) => text?.trim())
+            .join('\n');
+          
+          // 构建保存数据
+          const saveData = {
+            text: textContent,
+            app_type: 'voice-note',
+            metadata: {
+              blocks: allBlocks,  // 保存所有 blocks（包括临时状态）
+              noteInfo,
+              trigger: 'exit_with_all_data',
+              timestamp: Date.now(),
+              block_count: allBlocks.length,
+            },
+          };
+          
+          console.log('[Exit] 保存数据:', {
+            textLength: textContent.length,
+            blockCount: allBlocks.length,
+            hasNoteInfo: !!noteInfo,
+          });
+          
+          // 更新或创建记录
+          const recordId = voiceNoteAutoSave.getCurrentRecordId();
+          if (recordId) {
+            console.log('[Exit] 更新现有记录:', recordId);
+            const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(saveData),
+            });
+            
+            if (!response.ok) {
+              throw new Error(`更新记录失败: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            if (!result.success) {
+              throw new Error(result.message || '更新记录失败');
+            }
+            
+            console.log('[Exit] 记录更新成功');
+          } else {
+            console.log('[Exit] 创建新记录');
+            const response = await fetch(`${API_BASE_URL}/api/text/save`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(saveData),
+            });
+            
+            if (!response.ok) {
+              throw new Error(`创建记录失败: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            if (!result.success) {
+              throw new Error(result.message || '创建记录失败');
+            }
+            
+            console.log('[Exit] 记录创建成功:', result.record_id);
+          }
+          
+          setToast({ message: '笔记已保存，退出成功', type: 'success' });
+        } else {
+          console.log('[Exit] 没有内容，直接退出');
+          setToast({ message: '已退出，可以开始新的记录', type: 'info' });
+        }
+        
+        // 退出工作会话
+        endWorkSession();
+        
+      } catch (e) {
+        console.error('[Exit] 保存失败:', e);
+        const confirmed = window.confirm('保存失败，是否仍然退出？未保存的内容将丢失。');
+        if (confirmed) {
+          endWorkSession();
+        }
+      }
+    } else {
+      // 其他应用直接退出
+      endWorkSession();
+    }
   };
 
   // 应用切换处理
   const handleViewChange = (newView: AppView) => {
-    // 直接切换视图，允许多个app同时工作
+    // 如果 ASR 正在录音，阻止切换
+    if (asrState === 'recording') {
+      const ownerName = asrOwner === 'voice-note' ? '语音笔记' : 
+                        asrOwner === 'voice-chat' ? '语音助手' : 
+                        asrOwner === 'voice-zen' ? '禅' : '当前应用';
+      
+      setToast({ 
+        message: `${ownerName}正在录音中，请先停止录音再切换界面`, 
+        type: 'warning',
+        duration: 3000
+      });
+      console.warn(`[导航] 阻止切换：ASR 正在录音中 (所有者: ${asrOwner})`);
+      return;
+    }
+    
+    // 允许切换
     setActiveView(newView);
   };
 
-  // 自动保存草稿到 localStorage
+  // 启动和停止 VoiceNote 自动保存服务
   useEffect(() => {
-    if (text.trim() && isWorkSessionActive && activeView === 'voice-note') {
-      // 清除之前的定时器
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
+    if (isWorkSessionActive && activeView === 'voice-note') {
+      voiceNoteAutoSave.start();
+      console.log('[App] VoiceNote 自动保存服务已启动');
       
-      // 3秒后自动保存草稿
-      autoSaveTimerRef.current = setTimeout(() => {
-        try {
-          const draft = {
-            text,
-            app: activeView,
-            timestamp: Date.now(),
-          };
-          localStorage.setItem('voiceNoteDraft', JSON.stringify(draft));
-          console.log('草稿已自动保存');
-        } catch (e) {
-          console.error('保存草稿失败:', e);
-        }
-      }, 3000);
+      return () => {
+        voiceNoteAutoSave.stop();
+        console.log('[App] VoiceNote 自动保存服务已停止');
+      };
     }
-    
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
+  }, [isWorkSessionActive, activeView, voiceNoteAutoSave]);
+
+  // 在页面刷新/关闭前警告用户（如果正在录音）
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // 如果正在录音，警告用户
+      if (asrState === 'recording') {
+        e.preventDefault();
+        e.returnValue = '正在录音中，刷新页面会停止录音。确定要继续吗？';
+        return e.returnValue;
       }
     };
-  }, [text, isWorkSessionActive, activeView]);
 
-  // 恢复草稿
-  useEffect(() => {
-    try {
-      const savedDraft = localStorage.getItem('voiceNoteDraft');
-      if (savedDraft) {
-        const draft = JSON.parse(savedDraft);
-        // 只恢复24小时内的草稿
-        const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-        if (draft.timestamp > oneDayAgo && draft.text) {
-          setText(draft.text);
-          // 恢复草稿时自动启动工作会话
-          const appType = draft.app || 'voice-note';
-          if (appType === 'voice-note') {
-            startWorkSession('voice-note');
-          }
-          setToast({ message: '已恢复上次未保存的草稿', type: 'info' });
-        } else {
-          // 清除过期草稿
-          localStorage.removeItem('voiceNoteDraft');
-        }
-      }
-    } catch (e) {
-      console.error('恢复草稿失败:', e);
-    }
-  }, []);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [asrState]);
+
+  // 使用 ref 追踪上一次的连接状态，避免状态更新时序问题
+  const lastApiConnectedRef = useRef<boolean>(false);
+  const hasShownConnectedToastRef = useRef<boolean>(false);
+  const consecutiveFailuresRef = useRef<number>(0); // 连续失败次数
 
   // 检查API连接
   const checkApiConnection = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/status`);
+      const response = await fetch(`${API_BASE_URL}/api/status`, {
+        signal: AbortSignal.timeout(2000) // 2秒超时
+      });
       const connected = response.ok;
-      setApiConnected(connected);
-      if (!connected) {
-        setSystemError({
-          code: ErrorCodes.API_SERVER_UNAVAILABLE,
-          category: ErrorCategory.NETWORK,
-          message: 'API服务器不可用',
-          user_message: '无法连接到API服务器，请确认后端服务已启动',
-          suggestion: '1. 确认后端服务已启动\n2. 检查端口8765是否被占用\n3. 查看服务器日志'
-        });
+      
+      // 连接成功，重置失败计数
+      if (connected) {
+        consecutiveFailuresRef.current = 0;
       }
+      
+      // 使用 ref 来判断状态是否真正变化
+      if (connected !== lastApiConnectedRef.current) {
+        lastApiConnectedRef.current = connected;
+        setApiConnected(connected);
+        
+        if (connected) {
+          // 连接成功，清除错误
+          if (systemError?.code === ErrorCodes.API_SERVER_UNAVAILABLE || 
+              systemError?.code === ErrorCodes.NETWORK_UNREACHABLE) {
+            setSystemError(null);
+          }
+          
+          // 只在首次连接成功时显示 Toast，避免每5秒都显示
+          if (!hasShownConnectedToastRef.current) {
+            setToast({ message: 'API服务器已连接', type: 'success', duration: 2000 });
+            hasShownConnectedToastRef.current = true;
+          }
+        } else {
+          // 连接断开时重置标志，以便重新连接时可以再次显示 Toast
+          hasShownConnectedToastRef.current = false;
+          
+          setSystemError({
+            code: ErrorCodes.API_SERVER_UNAVAILABLE,
+            category: ErrorCategory.NETWORK,
+            message: 'API服务器不可用',
+            user_message: '无法连接到API服务器，请确认后端服务已启动',
+            suggestion: '1. 确认后端服务已启动\n2. 检查端口8765是否被占用\n3. 查看服务器日志'
+          });
+        }
+      }
+      
       return connected;
     } catch (e) {
+      // 增加失败计数
+      consecutiveFailuresRef.current += 1;
+      
+      if (lastApiConnectedRef.current === false) {
+        // 已经是 false，不需要重复设置错误（避免覆盖其他模块设置的更具体的错误）
+        return false;
+      }
+      
+      lastApiConnectedRef.current = false;
+      hasShownConnectedToastRef.current = false;
       setApiConnected(false);
-      setSystemError({
-        code: ErrorCodes.NETWORK_UNREACHABLE,
-        category: ErrorCategory.NETWORK,
-        message: '网络不可达',
-        user_message: '网络连接失败，请检查网络连接',
-        suggestion: '1. 检查网络连接\n2. 确认API服务器地址正确\n3. 检查防火墙设置'
-      });
+      
+      // 只有连续失败 3 次以上才设置网络错误（避免短暂波动误报）
+      // 并且只在没有其他错误时才设置（避免覆盖更具体的错误）
+      if (consecutiveFailuresRef.current >= 3 && !systemError) {
+        setSystemError({
+          code: ErrorCodes.NETWORK_UNREACHABLE,
+          category: ErrorCategory.NETWORK,
+          message: '网络不可达',
+          user_message: '网络连接失败，请检查网络连接',
+          suggestion: '1. 检查网络连接\n2. 确认API服务器地址正确\n3. 检查防火墙设置'
+        });
+      }
       return false;
     }
   };
+  
+  // 启动时立即检查API连接，并定期检查
+  useEffect(() => {
+    // 立即执行第一次检查
+    checkApiConnection();
+    
+    // 每5秒检查一次API连接状态
+    const intervalId = setInterval(() => {
+      checkApiConnection();
+    }, 5000);
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []); // 只在组件挂载时设置
 
-  // 连接WebSocket
-  const connectWebSocket = () => {
-    // 如果连接已存在且状态是 OPEN 或 CONNECTING，则不创建新连接
-    if (wsRef.current && 
-        (wsRef.current.readyState === WebSocket.OPEN || 
-         wsRef.current.readyState === WebSocket.CONNECTING)) {
-      return;
+  // ==================== 视图切换时的状态同步 ====================
+  useEffect(() => {
+    // 当切换到任何视图且 API 已连接时，同步后端 ASR 状态
+    if (apiConnected) {
+      fetch(`${API_BASE_URL}/api/status`)
+        .then(res => res.json())
+        .then(data => {
+          const backendState = data.state;
+          
+          if (backendState !== asrState) {
+            setAsrState(backendState);
+          }
+        })
+        .catch(error => {
+          console.error('[状态同步] 获取后端状态失败:', error);
+        });
     }
+  }, [activeView, apiConnected, asrOwner]); // 添加 asrOwner 依赖
 
-    if (wsRef.current) {
+  // ==================== IPC 消息监听（替代 WebSocket）====================
+  useEffect(() => {
+    // 定义消息处理函数
+    const handleAsrMessage = (data: any) => {
       try {
-        wsRef.current.close();
-      } catch (e) {
-        console.warn('关闭WebSocket连接失败:', e);
-      }
-      wsRef.current = null;
-    }
-
-    try {
-      const ws = new WebSocket(WS_URL);
-
-      ws.onopen = () => {
-        setError(null);
-        setSystemError(null);
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
+        // 只对重要消息类型打印日志，text_update 太频繁不打印
+        if (data.type !== 'text_update') {
+          console.log(`[IPC] 收到消息: type=${data.type}, activeView=${activeView}, asrOwner=${asrOwner}`);
         }
-      };
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          switch (data.type) {
-            case 'initial_state':
-              setAsrState(data.state);
-              if (data.text) setText(data.text);
-              break;
-            case 'text_update':
-              // 中间结果（实时更新）
-              blockEditorRef.current?.appendAsrText(
-                data.text || '',
-                false
-              );
-              break;
-            case 'text_final':
-              // 确定的结果（完整utterance）- 包含时间信息
-              blockEditorRef.current?.appendAsrText(
+        switch (data.type) {
+          case 'initial_state':
+            console.log(`[IPC] 初始状态同步: state=${data.state}`);
+            setAsrState(data.state);
+            if (data.text) setText(data.text);
+            break;
+          case 'text_update':
+            // 中间结果（实时更新）
+            if (activeView === 'voice-note' && blockEditorRef.current) {
+              blockEditorRef.current.appendAsrText(data.text || '', false);
+            }
+            // TODO: 为 voice-chat 和 voice-zen 添加类似的处理
+            break;
+          case 'text_final':
+            // 确定的结果（完整utterance）- 包含时间信息
+            if (activeView === 'voice-note' && blockEditorRef.current) {
+              blockEditorRef.current.appendAsrText(
                 data.text || '',
                 true,
                 {
@@ -224,94 +433,52 @@ function App() {
                   endTime: data.end_time
                 }
               );
-              break;
-            case 'state_change':
-              setAsrState(data.state);
-              break;
-            case 'error':
-              // 如果后端返回了完整的 SystemErrorInfo 对象
-              if (data.error && typeof data.error === 'object' && data.error.code) {
-                setSystemError(data.error);
-              } else {
-                // 兼容旧格式，创建一个简单的错误对象
-                setError(`${data.error_type || '错误'}: ${data.message || '未知错误'}`);
-              }
-              break;
-            default:
-              console.warn('未知的WebSocket消息类型:', data.type);
-          }
-        } catch (e) {
-          console.error('解析WebSocket消息失败:', e);
-          setSystemError({
-            code: ErrorCodes.WEBSOCKET_CONNECTION_FAILED,
-            category: ErrorCategory.NETWORK,
-            message: 'WebSocket消息解析失败',
-            user_message: '接收到无效的消息格式',
-            suggestion: '这可能是服务器错误，请重试或联系技术支持'
-          });
+            }
+            // TODO: 为 voice-chat 和 voice-zen 添加类似的处理
+            break;
+          case 'state_change':
+            setAsrState(data.state);
+            
+            // 如果 ASR 停止（从 recording 变为其他状态），清除 ASR 所有者
+            if (data.state !== 'recording' && asrState === 'recording') {
+              setAsrOwner(null);
+            }
+            break;
+          case 'state_sync':
+            // 新增：状态强制同步
+            setAsrState(data.state);
+            break;
+          case 'error':
+            // 如果后端返回了完整的 SystemErrorInfo 对象
+            if (data.error && typeof data.error === 'object' && data.error.code) {
+              setSystemError(data.error);
+            } else {
+              // 兼容旧格式，创建一个简单的错误对象
+              setError(`${data.error_type || '错误'}: ${data.message || '未知错误'}`);
+            }
+            break;
+          default:
+            console.warn('[IPC] 未知的消息类型:', data.type);
         }
-      };
-
-      ws.onerror = () => {
-        if (!apiConnected) {
-          setSystemError({
-            code: ErrorCodes.WEBSOCKET_CONNECTION_FAILED,
-            category: ErrorCategory.NETWORK,
-            message: 'WebSocket连接错误',
-            user_message: '实时连接失败，请刷新页面',
-            suggestion: '1. 刷新页面重试\n2. 检查API服务器状态\n3. 查看浏览器控制台日志'
-          });
-        }
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        if (apiConnected && !reconnectTimeoutRef.current) {
-          // 连接断开，显示提示（但会自动重连）
-          setSystemError({
-            code: ErrorCodes.WEBSOCKET_DISCONNECTED,
-            category: ErrorCategory.NETWORK,
-            message: 'WebSocket连接断开',
-            user_message: '连接已断开，正在尝试重连...',
-            suggestion: '系统会自动重连，请稍候'
-          });
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectTimeoutRef.current = null;
-            connectWebSocket();
-          }, 3000);
-        }
-      };
-
-      wsRef.current = ws;
-    } catch (e) {
-      console.error('WebSocket连接失败:', e);
-    }
-  };
-
-  useEffect(() => {
-    checkApiConnection().then((connected) => {
-      if (connected) connectWebSocket();
-    });
-
-    const interval = setInterval(() => {
-      checkApiConnection().then((connected) => {
-        if (connected && !wsRef.current) {
-          connectWebSocket();
-        }
-      });
-    }, 5000);
-
-    return () => {
-      clearInterval(interval);
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
+      } catch (e) {
+        console.error('[IPC] 处理消息失败:', e);
       }
     };
-  }, []);
+
+    // 设置IPC监听器（会自动移除旧的）
+    if (window.electronAPI?.onAsrMessage) {
+      window.electronAPI.onAsrMessage(handleAsrMessage);
+    } else {
+      console.warn('[IPC] electronAPI 不可用');
+    }
+
+    // 清理函数：移除所有监听器
+    return () => {
+      if (window.electronAPI?.removeAllAsrMessageListeners) {
+        window.electronAPI.removeAllAsrMessageListeners();
+      }
+    };
+  }, [activeView, asrState, asrOwner]); // 添加 asrOwner 依赖
 
   // ASR控制函数
   const callAsrApi = async (endpoint: string) => {
@@ -364,9 +531,27 @@ function App() {
     }
   };
 
-  const startAsr = async () => {
+  const startAsr = async (requestingApp?: AppView) => {
     if (!apiConnected) {
       setError('API未连接');
+      return false;
+    }
+    
+    // ASR 互斥访问控制：检查是否有其他 app 正在使用 ASR
+    if (asrOwner && requestingApp && asrOwner !== requestingApp) {
+      const ownerName = asrOwner === 'voice-note' ? '语音笔记' : 
+                        asrOwner === 'voice-chat' ? '语音助手' : 
+                        asrOwner === 'voice-zen' ? '禅' : asrOwner;
+      const requesterName = requestingApp === 'voice-note' ? '语音笔记' : 
+                           requestingApp === 'voice-chat' ? '语音助手' : 
+                           requestingApp === 'voice-zen' ? '禅' : requestingApp;
+      
+      setToast({ 
+        message: `ASR 正在被"${ownerName}"使用，无法启动"${requesterName}"的录音`, 
+        type: 'warning',
+        duration: 4000
+      });
+      console.warn(`[ASR互斥] 拒绝启动：${asrOwner} 正在使用 ASR，${requestingApp} 无法启动`);
       return false;
     }
     
@@ -379,22 +564,34 @@ function App() {
     // 立即更新状态为recording，防止重复点击
     setAsrState('recording');
     
+    // 设置 ASR 所有者
+    if (requestingApp) {
+      setAsrOwner(requestingApp);
+      console.log(`[ASR] 设置 ASR 所有者: ${requestingApp}`);
+    }
+    
     const success = await callAsrApi('/api/recording/start');
     if (!success) {
-      // 如果启动失败，重置状态为idle
+      // 如果启动失败，重置状态和所有者
       setAsrState('idle');
+      setAsrOwner(null);
     }
     return success;
   };
   
   const stopAsr = async () => {
-    if (!apiConnected) return;
+    if (!apiConnected) {
+      console.warn('[App] API未连接，无法停止ASR');
+      return;
+    }
     
     // 防止重复调用：如果已经在停止中，直接返回
     if (asrState === 'stopping') {
       console.log('[App] ASR已在停止中，忽略重复调用');
       return;
     }
+    
+    console.log('[App] 开始停止ASR...');
     
     // 立即更新状态为stopping，防止重复点击
     setAsrState('stopping');
@@ -403,24 +600,47 @@ function App() {
     const timeoutId = setTimeout(() => {
       console.warn('[App] ASR停止超时(10秒)，强制重置状态为idle');
       setAsrState('idle');
-      setError('ASR停止超时，已强制重置状态。如果问题持续，请重启应用。');
+      // 停止超时使用 Toast，不阻塞界面
+      setToast({ 
+        message: 'ASR停止超时，已强制重置。如问题持续，请重启应用', 
+        type: 'warning',
+        duration: 5000
+      });
     }, 10000);
     
     try {
+      console.log('[App] 发送停止请求到: /api/recording/stop');
       const response = await fetch(`${API_BASE_URL}/api/recording/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_edited_text: null }),
+        signal: AbortSignal.timeout(8000) // 8秒超时，给后端充足时间（后端最多等5秒）
       });
       
       // 清除超时定时器
       clearTimeout(timeoutId);
       
+      console.log(`[App] 停止请求响应状态: ${response.status}`);
+      
+      if (!response.ok) {
+        console.error('[App] 停止请求HTTP错误:', response.status, response.statusText);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
       const data = await response.json();
+      console.log('[App] 停止请求响应数据:', data);
+      
       if (data.success) {
+        console.log('[App] ASR停止成功');
         setToast({ message: 'ASR已停止', type: 'info' });
       } else {
-        setError(data.message);
+        console.error('[App] ASR停止失败:', data.message);
+        // 停止失败使用 Toast，不阻塞界面
+        setToast({ 
+          message: `停止失败: ${data.message}`, 
+          type: 'error',
+          duration: 5000
+        });
         // 如果停止失败，重置状态为idle
         setAsrState('idle');
       }
@@ -428,7 +648,16 @@ function App() {
       // 清除超时定时器
       clearTimeout(timeoutId);
       
-      setError(`停止ASR失败: ${e}`);
+      console.error('[App] 停止ASR请求失败:', e);
+      
+      // 停止失败使用 Toast，不阻塞界面
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      setToast({ 
+        message: `停止ASR失败: ${errorMessage.includes('timeout') ? '请求超时' : '网络错误'}`, 
+        type: 'error',
+        duration: 5000
+      });
+      
       // 发生错误时，强制重置状态为idle
       setAsrState('idle');
     }
@@ -437,7 +666,8 @@ function App() {
   // 启动ASR
   const handleAsrStart = async () => {
     if (asrState === 'idle') {
-      await startAsr();
+      // 传入当前视图作为请求者
+      await startAsr(activeView);
     }
   };
 
@@ -586,6 +816,7 @@ function App() {
         if (data.success) {
           // 清空内容并清除草稿
           setText('');
+          setInitialBlocks([]); // 清空 initialBlocks，触发 BlockEditor 重新初始化
           localStorage.removeItem('voiceNoteDraft');
           setToast({ message: '当前笔记已保存，可以开始新笔记了', type: 'success' });
           // 保持工作会话活跃，用户可以继续记录
@@ -610,6 +841,7 @@ function App() {
     } else {
       // 如果没有内容，直接清空
       setText('');
+      setInitialBlocks([]); // 清空 initialBlocks，触发 BlockEditor 重新初始化
       localStorage.removeItem('voiceNoteDraft');
       setToast({ message: '准备好记录新笔记了', type: 'info' });
     }
@@ -687,29 +919,84 @@ function App() {
   };
 
   const loadRecord = async (recordId: string) => {
-    if (!apiConnected) return;
+    console.log('[App] 开始恢复任务, recordId:', recordId);
+    
+    if (!apiConnected) {
+      console.warn('[App] API未连接，无法恢复任务');
+      setToast({ message: 'API未连接，无法恢复任务', type: 'error' });
+      return;
+    }
+    
     try {
+      console.log('[App] 发送请求到:', `${API_BASE_URL}/api/records/${recordId}`);
       const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
+      console.log('[App] 收到响应数据:', {
+        hasText: !!data.text,
+        textLength: data.text?.length,
+        hasMetadata: !!data.metadata,
+        hasBlocks: !!data.metadata?.blocks,
+        blocksCount: data.metadata?.blocks?.length,
+        appType: data.app_type
+      });
+      
       if (data.text) {
         setText(data.text);
+        console.log('[App] 设置文本内容, 长度:', data.text.length);
         
-        if (data.metadata?.blocks && Array.isArray(data.metadata.blocks)) {
+        if (data.metadata?.blocks && Array.isArray(data.metadata.blocks) && data.metadata.blocks.length > 0) {
+          console.log('[App] 恢复blocks数据:', data.metadata.blocks.length, '个blocks');
           setInitialBlocks(data.metadata.blocks);
         } else {
-          setInitialBlocks(undefined);
+          console.log('[App] 无blocks数据，从纯文本创建blocks');
+          // 从纯文本创建简单的blocks结构
+          const timestamp = Date.now();
+          const textBlocks = data.text.split('\n').filter((line: string) => line.trim()).map((line: string, index: number) => ({
+            id: `block-restored-${timestamp}-${index}`,
+            type: 'paragraph',
+            content: line,
+            isAsrWriting: false,
+          }));
+          
+          // 添加note-info block
+          const noteInfoBlock = {
+            id: `block-note-info-${timestamp}`,
+            type: 'note-info',
+            content: '',
+            noteInfo: {
+              title: '',
+              type: '',
+              relatedPeople: '',
+              location: '',
+              startTime: '',
+              endTime: ''
+            }
+          };
+          
+          setInitialBlocks([noteInfoBlock, ...textBlocks]);
         }
         
         // 切换到语音笔记视图
         setActiveView('voice-note');
+        console.log('[App] 切换到语音笔记视图');
         
         // 恢复工作会话（从历史记录加载相当于恢复工作）
         startWorkSession('voice-note');
+        console.log('[App] 启动工作会话');
         
         // 提示用户已恢复工作
         setToast({ message: '已恢复笔记，可以继续编辑或生成小结', type: 'info' });
+      } else {
+        console.warn('[App] 响应中没有text字段');
+        setToast({ message: '记录内容为空', type: 'error' });
       }
     } catch (e) {
+      console.error('[App] 恢复记录失败:', e);
       setSystemError({
         code: ErrorCodes.STORAGE_READ_FAILED,
         category: ErrorCategory.STORAGE,
@@ -760,8 +1047,26 @@ function App() {
             blockEditorRef={blockEditorRef}
             isWorkSessionActive={isWorkSessionActive}
             onStartWork={() => startWorkSession('voice-note')}
-            onEndWork={endWorkSession}
+            onEndWork={exitWithSave}
             initialBlocks={initialBlocks}
+            onBlockFocus={(blockId) => setEditingBlockId(blockId)}
+            onBlockBlur={(blockId) => {
+              setEditingBlockId(null);
+              // Block 失焦时触发数据库保存
+              voiceNoteAutoSave.saveToDatabase('edit_complete', false);
+            }}
+            onContentChange={(content, isDefiniteUtterance) => {
+              // ASR 确认 utterance 时立即保存到数据库
+              if (isDefiniteUtterance) {
+                console.log('[保存触发] ASR 确认 utterance');
+                voiceNoteAutoSave.saveToDatabase('definite_utterance', true);
+              }
+            }}
+            onNoteInfoChange={(noteInfo) => {
+              console.log('[保存触发] 笔记信息变更');
+              // 笔记信息变更时防抖保存
+              voiceNoteAutoSave.saveToDatabase('content_change', false);
+            }}
           />
         )}
 

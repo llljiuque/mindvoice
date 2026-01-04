@@ -6,7 +6,8 @@
   flex-direction: column;
   flex-shrink: 0;
   box-shadow: var(--shadow-lg);
-  z-index: 10;
+  z-index: 1000;
+  position: relative;
 }
 
 .sidebar-header {
@@ -76,16 +77,19 @@
 .window-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-md);
   width: 100%;
-  padding: 10px 16px;
+  padding: var(--space-md) var(--space-lg);
   background: transparent;
   border: none;
   color: rgba(255, 255, 255, 0.9);
   cursor: pointer;
   text-align: left;
-  font-size: 14px;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
   transition: all var(--transition-base);
+  position: relative;
 }
 
 .window-menu-item:hover {
@@ -93,12 +97,59 @@
   color: var(--color-text-inverse);
 }
 
+.window-menu-item:active {
+  background: var(--color-bg-sidebar-active);
+  transform: scale(0.98);
+}
+
 .menu-item-icon {
-  font-size: 16px;
+  font-size: var(--font-size-base);
   width: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+
+.menu-item-arrow {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+  transition: transform var(--transition-base);
+}
+
+.menu-item-arrow.expanded {
+  transform: rotate(0deg);
+}
+
+/* 内联子菜单 */
+.window-submenu-inline {
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-sm);
+  margin: 4px 0;
+  padding: 4px 0;
+  animation: submenu-expand 0.2s ease-out;
+}
+
+@keyframes submenu-expand {
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    max-height: 200px;
+    transform: translateY(0);
+  }
+}
+
+/* 子菜单项缩进 */
+.window-menu-item.submenu-item {
+  padding-left: calc(var(--space-lg) + 20px);
+  font-size: calc(var(--font-size-sm) - 1px);
 }
 
 .window-menu-divider {
@@ -111,6 +162,8 @@
   flex: 1;
   overflow-y: auto;
   padding: 12px 0;
+  -webkit-app-region: drag; /* 允许拖拽窗口 */
+  cursor: move; /* 移动光标 */
 }
 
 .sidebar-content::-webkit-scrollbar {
@@ -155,6 +208,7 @@
   border-radius: var(--radius-md);
   transition: all var(--transition-base);
   position: relative;
+  -webkit-app-region: no-drag; /* 导航按钮区域不可拖拽，保持可点击 */
 }
 
 .nav-item::before {

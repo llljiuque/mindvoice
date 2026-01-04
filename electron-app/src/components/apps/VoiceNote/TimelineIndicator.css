@@ -1,10 +1,10 @@
 .timeline-indicator {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  margin-top: 4px;
-  font-size: 11px;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  margin-top: var(--space-xs);
+  font-size: var(--font-size-xs);
   color: #06b6d4;
   background: transparent;
   border-radius: var(--radius-sm);
@@ -15,7 +15,7 @@
 
 .timeline-indicator:hover {
   opacity: 1;
-  background: transparent;
+  background: rgba(6, 182, 212, 0.05);
 }
 
 .timeline-dot {
@@ -30,7 +30,7 @@
 .timeline-info {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-sm);
   font-family: 'SF Mono', Monaco, 'Courier New', monospace;
   font-weight: 500;
 }
@@ -49,7 +49,7 @@
 .timeline-duration {
   color: #06b6d4;
   font-weight: 500;
-  margin-left: 2px;
+  margin-left: var(--space-xs);
 }
 
 /* 在 ASR 正在写入时隐藏时间轴 */

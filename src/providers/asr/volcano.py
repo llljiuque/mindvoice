@@ -256,6 +256,7 @@ class VolcanoASRProvider(BaseASRProvider):
         self._sender_task: Optional[asyncio.Task] = None
         self._receiver_task: Optional[asyncio.Task] = None
         self._on_text_callback: Optional[Callable[[str, bool, dict], None]] = None
+        self._on_disconnected_callback: Optional[Callable[[], None]] = None
         self._last_text = ""
         self._current_text = ""
     
@@ -350,8 +351,18 @@ class VolcanoASRProvider(BaseASRProvider):
                 
                 timeout = aiohttp.ClientTimeout(total=30)
                 
-                if self.session and not self.session.closed:
-                    await self.session.close()
+                # 确保旧session完全关闭
+                if self.session:
+                    if not self.session.closed:
+                        try:
+                            await self.session.close()
+                            # 等待connector完全关闭
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logger.warning(f"[ASR-WS] ⚠ 关闭旧session失败: {e}")
+                    self.session = None
+                
+                # 创建新session
                 self.session = aiohttp.ClientSession(timeout=timeout)
                 
                 # 连接 WebSocket
@@ -445,11 +456,30 @@ class VolcanoASRProvider(BaseASRProvider):
         return False
     
     async def _disconnect(self):
-        """断开连接"""
+        """断开连接并清理所有资源"""
         try:
             logger.info("[ASR-WS] 开始断开连接...")
             
-            # 关闭WebSocket连接
+            # 1. 取消任务（如果还在运行）
+            if self._sender_task and not self._sender_task.done():
+                logger.debug("[ASR-WS] 取消发送器任务")
+                self._sender_task.cancel()
+                try:
+                    await self._sender_task
+                except asyncio.CancelledError:
+                    pass
+            self._sender_task = None
+            
+            if self._receiver_task and not self._receiver_task.done():
+                logger.debug("[ASR-WS] 取消接收器任务")
+                self._receiver_task.cancel()
+                try:
+                    await self._receiver_task
+                except asyncio.CancelledError:
+                    pass
+            self._receiver_task = None
+            
+            # 2. 关闭WebSocket连接
             if self.conn:
                 if not self.conn.closed:
                     logger.info("[ASR-WS] 正在关闭WebSocket...")
@@ -457,19 +487,41 @@ class VolcanoASRProvider(BaseASRProvider):
                     logger.info("[ASR-WS] ✓ WebSocket已关闭")
                 self.conn = None
             
-            # 关闭HTTP会话
+            # 3. 关闭HTTP会话
             if self.session:
                 if not self.session.closed:
                     await self.session.close()
                     logger.debug("[ASR-WS] ✓ HTTP会话已关闭")
                 self.session = None
             
-            logger.info("[ASR-WS] ✓ 连接已断开")
+            # 4. 清空音频队列
+            if self._audio_queue:
+                while not self._audio_queue.empty():
+                    try:
+                        self._audio_queue.get_nowait()
+                    except:
+                        break
+                self._audio_queue = None
+            
+            logger.info("[ASR-WS] ✓ 连接已断开，资源已清理")
         except Exception as e:
             logger.error(f"[ASR-WS] ✗ 断开连接失败: {e}", exc_info=True)
-            # 即使关闭失败，也清空引用
+            # 即使关闭失败，也清空所有引用
             self.conn = None
             self.session = None
+            self._sender_task = None
+            self._receiver_task = None
+            self._audio_queue = None
+        finally:
+            # 确保重置流式识别状态（允许重新启动）
+            self._streaming_active = False
+            
+            # 通知上层ASR已断开
+            if self._on_disconnected_callback:
+                try:
+                    self._on_disconnected_callback()
+                except Exception as e:
+                    logger.error(f"[ASR-WS] ✗ 断开回调执行失败: {e}", exc_info=True)
     
     def _is_conn_available(self) -> bool:
         """检查连接是否可用"""
@@ -505,6 +557,13 @@ class VolcanoASRProvider(BaseASRProvider):
                       time_info: 时间信息 {start_time: 毫秒, end_time: 毫秒}
         """
         self._on_text_callback = callback
+    
+    def set_on_disconnected_callback(self, callback: Optional[Callable[[], None]]):
+        """设置断开连接回调函数
+        
+        当ASR接收器完成并断开连接时，会调用此回调通知上层
+        """
+        self._on_disconnected_callback = callback
     
     async def start_streaming_recognition(self, language: str = "zh-CN") -> bool:
         if self._streaming_active:
@@ -542,6 +601,10 @@ class VolcanoASRProvider(BaseASRProvider):
         
         try:
             await self._audio_queue.put(audio_data)
+            # 记录队列大小（每100个块记录一次）
+            if self.seq % 100 == 0:
+                queue_size = self._audio_queue.qsize()
+                logger.debug(f"[ASR-Queue] 入队成功: seq={self.seq}, 数据={len(audio_data)}B, 队列深度={queue_size}")
         except Exception as e:
             logger.error(f"[ASR-WS] ✗ 音频数据入队失败: {e}")
     
@@ -553,18 +616,36 @@ class VolcanoASRProvider(BaseASRProvider):
         
         if self._audio_queue:
             try:
+                queue_size = self._audio_queue.qsize()
+                logger.info(f"[ASR-Queue] 发送结束标记，当前队列深度={queue_size}")
                 self._audio_queue.put_nowait(None)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"[ASR-Queue] 发送结束标记失败: {e}")
         
         return self._last_text
     
     async def _audio_sender(self):
         try:
             last_audio = None
+            send_count = 0
+            queue_id = id(self._audio_queue)
+            logger.info(f"[ASR-Sender] 发送器线程开始运行, 队列ID={queue_id}")
             
             while True:
+                # 记录队列状态
+                queue_size_before = self._audio_queue.qsize()
+                
+                # 每50个包记录一次等待状态
+                if send_count % 10 == 0:
+                    logger.debug(f"[ASR-Sender] 等待从队列取数据... (已发送{send_count}个包，队列={queue_size_before})")
+                
                 audio_data = await self._audio_queue.get()
+                
+                queue_size_after = self._audio_queue.qsize()
+                
+                # 每100个包记录一次详细信息
+                if send_count % 100 == 0:
+                    logger.debug(f"[ASR-Sender] 从队列取出数据: 取出前队列={queue_size_before}, 取出后队列={queue_size_after}")
                 
                 # 检查连接是否可用
                 if not self._is_conn_available():
@@ -572,6 +653,7 @@ class VolcanoASRProvider(BaseASRProvider):
                     break
                 
                 if audio_data is None:
+                    logger.info(f"[ASR-Sender] 收到结束标记 (已发送{send_count}个音频包，队列剩余={queue_size_after})")
                     if last_audio is not None:
                         request = RequestBuilder.new_audio_only_request(self.seq, last_audio, is_last=True)
                         if self._is_conn_available():
@@ -591,18 +673,34 @@ class VolcanoASRProvider(BaseASRProvider):
                 if last_audio is not None:
                     request = RequestBuilder.new_audio_only_request(self.seq, last_audio, is_last=False)
                     if self._is_conn_available():
+                        import time
+                        send_start = time.time()
                         await self.conn.send_bytes(request)
+                        send_duration = (time.time() - send_start) * 1000  # 转换为毫秒
+                        
+                        send_count += 1
+                        
+                        # 每10个包记录一次，包括发送耗时
+                        if send_count % 10 == 0:
+                            logger.info(f"[ASR-Sender] 已发送 {send_count} 个音频包 (seq={self.seq}, 队列剩余={queue_size_after}, 本次发送耗时={send_duration:.1f}ms)")
+                        
+                        # 如果发送耗时异常长，记录警告
+                        if send_duration > 500:
+                            logger.warning(f"[ASR-Sender] 发送耗时过长: {send_duration:.1f}ms (seq={self.seq})")
+                        
                         self.seq += 1
                     else:
                         logger.warning("[ASR-WS] ⚠ 连接已断开，停止发送音频数据")
                         break
                 
                 last_audio = audio_data
+            
+            logger.info(f"[ASR-Sender] 发送器线程结束，共发送 {send_count} 个音频包")
                 
         except asyncio.CancelledError:
-            pass
+            logger.info("[ASR-Sender] 发送器任务被取消")
         except Exception as e:
-            logger.error(f"[ASR-WS] ✗ 发送任务异常: {e}")
+            logger.error(f"[ASR-WS] ✗ 发送任务异常: {e}", exc_info=True)
     
     async def _audio_receiver(self):
         try:
@@ -678,10 +776,16 @@ class VolcanoASRProvider(BaseASRProvider):
         self._last_text = text
         self._current_text = text
         
+        # 详细日志：记录所有结果
         if is_definite_utterance:
             logger.info(f"[ASR] 确定结果: '{text}'")
         elif is_last_package:
             logger.info(f"[ASR] 最终结果: '{text}'")
+        else:
+            logger.info(f"[ASR] 中间结果: '{text}'")
+        
+        # 回调日志
+        logger.debug(f"[ASR] 触发回调: is_definite={is_definite_utterance}, has_time_info={bool(time_info)}")
         
         if self._on_text_callback:
             self._on_text_callback(text, is_definite_utterance, time_info)

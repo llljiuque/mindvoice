@@ -2,7 +2,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-sm);
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
@@ -54,21 +54,31 @@
   display: none;
 }
 
+/* 可访问性：焦点指示器 */
+.app-button:focus-visible {
+  outline: 3px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 /* ==================== 尺寸 ==================== */
 .app-button-small {
-  padding: 8px 14px;
+  padding: 10px 16px;
   font-size: 13px;
+  min-height: 44px;  /* 符合可访问性标准的最小点击目标 */
 }
 
 .app-button-medium {
-  padding: 10px 18px;
+  padding: 12px 20px;
   font-size: 14px;
+  min-height: 48px;
 }
 
 .app-button-large {
-  padding: 12px 24px;
-  font-size: 15px;
+  padding: 14px 28px;
+  font-size: 16px;
+  font-weight: 700;
   min-width: 140px;
+  min-height: 54px;
 }
 
 /* ==================== 变体样式 ==================== */
@@ -93,37 +103,45 @@
 .app-button-success {
   background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-hover) 100%);
   color: var(--color-text-inverse);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .app-button-success:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--color-success-hover) 0%, #047857 100%);
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35), 0 0 20px rgba(16, 185, 129, 0.25);
 }
 
 .app-button-warning {
   background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning-hover) 100%);
   color: var(--color-text-inverse);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .app-button-warning:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--color-warning-hover) 0%, #b45309 100%);
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.35), 0 0 20px rgba(245, 158, 11, 0.25);
 }
 
 .app-button-danger {
   background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-hover) 100%);
   color: var(--color-text-inverse);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .app-button-danger:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--color-danger-hover) 0%, #b91c1c 100%);
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.35), 0 0 20px rgba(239, 68, 68, 0.25);
 }
 
 .app-button-info {
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: var(--color-text-inverse);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .app-button-info:hover:not(:disabled) {
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.35), 0 0 20px rgba(59, 130, 246, 0.25);
 }
 
 .app-button-ghost {
@@ -151,17 +169,17 @@
 /* ==================== 按钮组 ==================== */
 .app-button-group {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
 }
 
 .app-button-group::before {
   content: '';
   width: 1px;
-  height: 24px;
+  height: 28px;
   background: var(--color-border);
-  margin-right: 4px;
-  margin-left: -4px;
+  margin-right: 6px;
+  margin-left: -2px;
 }
 
 .app-button-group:first-child::before {

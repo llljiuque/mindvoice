@@ -4,9 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -22,6 +20,15 @@ wheels/
 venv/
 env/
 ENV/
+
+# 构建产物
+python-backend/dist/
+python-backend/build/
+build/resources/icons/*.icns
+build/resources/icons/*.ico
+release/
+*.spec.bak
+*.dmg.blockmap
 
 # 配置文件（包含敏感信息）
 config.yml
@@ -41,6 +48,14 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 用户数据
+data/images/*.png
+data/images/*.jpg
+data/images/*.jpeg
+data/images/*.gif
+data/images/*.webp
+!data/images/.gitkeep
 
 # Electron
 electron-app/node_modules/

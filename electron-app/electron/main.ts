@@ -19,6 +19,76 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let pythonProcess: ChildProcess | null = null;
 let isQuitting = false;
+let pollingTimer: NodeJS.Timeout | null = null;
+let lastMessageId = 0;
+
+/**
+ * 轮询后端消息（替代 WebSocket）
+ */
+async function pollMessages() {
+  if (!mainWindow) return;
+  
+  try {
+    const response = await fetch(`${API_URL}/api/messages?after_id=${lastMessageId}`, {
+      signal: AbortSignal.timeout(5000), // 5秒超时
+    });
+    
+    if (!response.ok) {
+      console.error(`[轮询] HTTP错误: ${response.status}`);
+      return;
+    }
+    
+    const data = await response.json() as {
+      success: boolean;
+      messages?: Array<{ id: number; message: any; timestamp: number }>;
+    };
+    
+    if (data.success && data.messages && data.messages.length > 0) {
+      const messages = data.messages; // 保存到局部变量，避免TypeScript类型检查问题
+      console.log(`[轮询] 收到 ${messages.length} 条新消息 (lastId: ${lastMessageId})`);
+      
+      // 通过 IPC 推送到渲染进程
+      messages.forEach((item, index) => {
+        console.log(`  [${index + 1}/${messages.length}] 消息ID: ${item.id}, 类型: ${item.message.type}, 时间: ${new Date(item.timestamp).toLocaleTimeString()}`);
+        mainWindow?.webContents.send('asr-message', item.message);
+        lastMessageId = item.id;
+      });
+    }
+  } catch (error) {
+    // 轮询失败不打印错误（避免刷屏），静默重试
+    // console.error('[轮询] 请求失败:', error);
+  }
+}
+
+/**
+ * 启动轮询
+ */
+function startPolling() {
+  if (pollingTimer) {
+    console.log('[轮询] 已在运行');
+    return;
+  }
+  
+  console.log('[轮询] 开始轮询后端消息 (间隔: 100ms)');
+  lastMessageId = 0; // 重置消息ID
+  
+  // 立即执行一次
+  pollMessages();
+  
+  // 每 100ms 轮询一次
+  pollingTimer = setInterval(pollMessages, 100);
+}
+
+/**
+ * 停止轮询
+ */
+function stopPolling() {
+  if (pollingTimer) {
+    clearInterval(pollingTimer);
+    pollingTimer = null;
+    console.log('[轮询] 已停止');
+  }
+}
 
 /**
  * 检查API服务器是否已经运行
@@ -426,7 +496,7 @@ function createTray(): void {
     
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: '显示窗口',
+        label: 'Show Window',
         click: () => {
           if (mainWindow) {
             mainWindow.show();
@@ -438,7 +508,50 @@ function createTray(): void {
       },
       { type: 'separator' },
       {
-        label: '退出',
+        label: 'Display Mode',
+        submenu: [
+          {
+            label: '📱 Portrait',
+            click: () => {
+              if (mainWindow) {
+                if (mainWindow.isMaximized()) {
+                  mainWindow.unmaximize();
+                }
+                mainWindow.setSize(450, 800);
+                mainWindow.center();
+                mainWindow.show();
+              }
+            },
+          },
+          {
+            label: '🖥️ Landscape',
+            click: () => {
+              if (mainWindow) {
+                if (mainWindow.isMaximized()) {
+                  mainWindow.unmaximize();
+                }
+                mainWindow.setSize(800, 450);
+                mainWindow.center();
+                mainWindow.show();
+              }
+            },
+          },
+          {
+            label: '⛶ Maximize',
+            click: () => {
+              if (mainWindow) {
+                if (!mainWindow.isMaximized()) {
+                  mainWindow.maximize();
+                }
+                mainWindow.show();
+              }
+            },
+          },
+        ],
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit',
         click: () => {
           isQuitting = true;
           app.quit();
@@ -488,8 +601,8 @@ function setupCSP(): void {
   
   // 开发环境：允许unsafe-eval用于Vite HMR，生产环境：更严格的策略
   const csp = isDev
-    ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765 http://localhost:5173 ws://localhost:5173; img-src 'self' data:; font-src 'self' data:;"
-    : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765; img-src 'self' data:; font-src 'self' data:;";
+    ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:5173; style-src 'self' 'unsafe-inline' http://localhost:5173; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765 http://localhost:5173 ws://localhost:5173; img-src 'self' data: http://127.0.0.1:8765; font-src 'self' data:;"
+    : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:8765 http://127.0.0.1:8765; img-src 'self' data: http://127.0.0.1:8765; font-src 'self' data:;";
   
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -518,6 +631,9 @@ app.whenReady().then(async () => {
     // 创建窗口和托盘
     createWindow();
     createTray();
+    
+    // 启动轮询
+    startPolling();
     
     console.log('[主进程] 应用初始化完成');
   } catch (error) {
@@ -550,6 +666,10 @@ app.on('activate', () => {
  */
 app.on('before-quit', (event) => {
   isQuitting = true;
+  
+  // 停止轮询
+  stopPolling();
+  
   // 如果 pythonProcess 存在，阻止默认退出，等待服务器停止
   if (pythonProcess && !pythonProcess.killed) {
     event.preventDefault();
@@ -579,10 +699,34 @@ ipcMain.handle('check-api-server', async () => {
   }
 });
 
-// 窗口控制
-ipcMain.handle('window-minimize', () => {
+// 窗口控制（移除最小化功能，因为已有 hide window）
+ipcMain.handle('window-set-landscape', () => {
   if (mainWindow) {
-    mainWindow.minimize();
+    // 横屏模式: 800x450 (16:9)
+    const landscapeWidth = 800;
+    const landscapeHeight = 450;
+    
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    }
+    
+    mainWindow.setSize(landscapeWidth, landscapeHeight);
+    mainWindow.center();
+  }
+});
+
+ipcMain.handle('window-set-portrait', () => {
+  if (mainWindow) {
+    // 竖屏模式: 450x800 (9:16)
+    const portraitWidth = 450;
+    const portraitHeight = 800;
+    
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    }
+    
+    mainWindow.setSize(portraitWidth, portraitHeight);
+    mainWindow.center();
   }
 });
 

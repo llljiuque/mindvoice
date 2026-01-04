@@ -7,11 +7,13 @@ import logging
 import sys
 import os
 import json
+import base64
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Set, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -26,8 +28,9 @@ from src.core.logger import get_logger
 from src.core.error_codes import SystemError, SystemErrorInfo
 from src.services.voice_service import VoiceService
 from src.services.llm_service import LLMService
+from src.services.knowledge_service import KnowledgeService
 from src.utils.audio_recorder import SoundDeviceRecorder
-from src.agents import SummaryAgent
+from src.agents import SummaryAgent, SmartChatAgent
 
 logger = get_logger("API")
 
@@ -37,6 +40,15 @@ async def lifespan(app: FastAPI):
     setup_logging()
     setup_voice_service()
     setup_llm_service()
+    
+    # 在异步上下文中启动知识库模型的后台加载
+    global knowledge_service
+    if knowledge_service and hasattr(knowledge_service, 'start_background_load'):
+        load_task = knowledge_service.start_background_load()
+        if load_task:
+            # start_background_load() 已经返回一个正在运行的 Task，不需要再包装
+            # 只需要保留引用，防止被垃圾回收
+            logger.info("[API] 已在后台启动 Embedding 模型加载任务")
     
     yield
     
@@ -78,12 +90,14 @@ app.add_middleware(
 # 全局服务实例
 voice_service: Optional[VoiceService] = None
 llm_service: Optional[LLMService] = None
+knowledge_service: Optional[KnowledgeService] = None
 summary_agent: Optional[SummaryAgent] = None
+smart_chat_agent: Optional[SmartChatAgent] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
 
-# WebSocket连接管理
-active_connections: Set[WebSocket] = set()
+# WebSocket连接管理（单连接模式）
+current_connection: Optional[WebSocket] = None
 
 
 # ==================== API响应模型 ====================
@@ -118,6 +132,7 @@ class RecordItem(BaseModel):
     id: str
     text: str
     metadata: dict
+    app_type: Optional[str] = 'voice-note'  # 添加 app_type 字段
     created_at: str
 
 
@@ -170,51 +185,50 @@ class LLMInfoResponse(BaseModel):
     max_context_tokens: Optional[int] = None
 
 
-# ==================== WebSocket广播函数 ====================
+# ==================== 消息缓冲区（替代 WebSocket）====================
 
-async def broadcast_safe(message: dict):
-    """安全的广播，保证消息顺序和可靠性
+class MessageBuffer:
+    """消息缓冲区 - 用于轮询方案"""
+    def __init__(self):
+        self.messages = []
+        self.counter = 0
+        self.max_size = 100  # 只保留最近 100 条消息
     
-    改进点：
-    1. 不使用全局锁（避免事件循环冲突）
-    2. 使用gather等待所有发送完成
-    3. 统一错误处理
-    """
-    if not active_connections:
-        return
+    def add(self, message: dict):
+        """添加消息到缓冲区"""
+        self.counter += 1
+        import time
+        self.messages.append({
+            "id": self.counter,
+            "message": message,
+            "timestamp": time.time()
+        })
+        
+        # 只保留最近的消息
+        if len(self.messages) > self.max_size:
+            self.messages = self.messages[-self.max_size:]
+        
+        logger.debug(f"[消息缓冲] 添加消息: id={self.counter}, type={message.get('type')}, 缓冲区大小={len(self.messages)}")
     
-    disconnected = set()
-    tasks = []
+    def get_after(self, after_id: int):
+        """获取指定 ID 之后的所有消息"""
+        result = [m for m in self.messages if m["id"] > after_id]
+        if result:
+            logger.debug(f"[消息缓冲] 查询: after_id={after_id}, 返回 {len(result)} 条消息")
+        return result
     
-    # 为每个连接创建发送任务
-    for connection in list(active_connections):
-        task = connection.send_json(message)
-        tasks.append((connection, task))
-    
-    # 等待所有发送完成
-    results = await asyncio.gather(*[t for _, t in tasks], return_exceptions=True)
-    
-    # 处理发送结果
-    for (conn, _), result in zip(tasks, results):
-        if isinstance(result, Exception):
-            logger.error(f"[API] 广播失败: {result}")
-            disconnected.add(conn)
-    
-    # 移除失败的连接
-    if disconnected:
-        active_connections.difference_update(disconnected)
-        logger.info(f"[API] 已移除 {len(disconnected)} 个失败的连接，当前连接数: {len(active_connections)}")
+    def clear(self):
+        """清空缓冲区"""
+        self.messages = []
+        logger.info("[消息缓冲] 缓冲区已清空")
+
+# 全局消息缓冲区
+message_buffer = MessageBuffer()
 
 def broadcast(message: dict):
-    """向所有WebSocket连接广播消息"""
-    if not active_connections:
-        return
-    
-    try:
-        loop = asyncio.get_running_loop()
-        asyncio.create_task(broadcast_safe(message))
-    except RuntimeError:
-        logger.warning("[API] 无法广播消息：没有运行的事件循环")
+    """向客户端广播消息（新方案：写入缓冲区）"""
+    message_buffer.add(message)
+    logger.debug(f"[API] 消息已缓冲: type={message.get('type')}")
 
 
 # ==================== 服务初始化 ====================
@@ -255,6 +269,7 @@ def setup_voice_service():
             chunk=config.get('audio.chunk', 1024),
             device=audio_device,
             vad_config=vad_config,  # 传入VAD配置
+            audio_processing_config=config.get('audio.audio_processing'),  # 传入音频处理配置
             max_buffer_seconds=config.get('audio.max_buffer_seconds', 60)  # 缓冲区管理
         )
         
@@ -270,11 +285,18 @@ def setup_voice_service():
             if is_definite and time_info:
                 message["start_time"] = time_info.get('start_time', 0)
                 message["end_time"] = time_info.get('end_time', 0)
+            
+            # 添加app_id字段（如果有）
+            if voice_service._current_app_id:
+                message["app_id"] = voice_service._current_app_id
+            
+            # 详细日志：记录广播的消息类型
+            logger.debug(f"[API] 广播消息: type={message['type']}, text_len={len(text)}, is_definite={is_definite}, app_id={message.get('app_id')}")
             broadcast(message)
         
         voice_service.set_on_text_callback(on_text_callback)
         voice_service.set_on_state_change_callback(
-            lambda state: broadcast({"type": "state_change", "state": state.value})
+            lambda state: broadcast({"type": "state_change", "state": state.value, "app_id": voice_service._current_app_id if voice_service._current_app_id else None})
         )
         
         # 错误回调 - 传递完整的 SystemErrorInfo 对象
@@ -298,8 +320,8 @@ def setup_voice_service():
 
 
 def setup_llm_service():
-    """初始化 LLM 服务"""
-    global llm_service, summary_agent, config
+    """初始化 LLM 服务和知识库服务（知识库延迟加载）"""
+    global llm_service, knowledge_service, summary_agent, smart_chat_agent, config
     
     logger.info("[API] 初始化 LLM 服务...")
     
@@ -313,17 +335,40 @@ def setup_llm_service():
         if llm_service.is_available():
             logger.info("[API] LLM 服务初始化完成")
             
+            # 初始化知识库服务（延迟加载模式，不阻塞启动）
+            try:
+                knowledge_service = KnowledgeService(
+                    storage_path="./data/knowledge",
+                    embedding_model="all-MiniLM-L6-v2",
+                    lazy_load=True  # 启用延迟加载
+                )
+                logger.info("[API] 知识库服务初始化成功（延迟加载模式，模型将在后台加载）")
+            except Exception as e:
+                logger.warning(f"[API] 知识库服务初始化失败（可能是依赖未安装）: {e}")
+                knowledge_service = None
+            
             # 初始化 SummaryAgent
             summary_agent = SummaryAgent(llm_service)
             logger.info(f"[API] {summary_agent.name} 初始化完成")
+            
+            # 初始化 SmartChatAgent
+            smart_chat_agent = SmartChatAgent(
+                llm_service=llm_service,
+                knowledge_service=knowledge_service
+            )
+            logger.info(f"[API] {smart_chat_agent.name} 初始化完成")
         else:
             logger.warning("[API] LLM 服务不可用，请检查配置")
             summary_agent = None
+            smart_chat_agent = None
+            knowledge_service = None
             
     except Exception as e:
         logger.error(f"[API] LLM 服务初始化失败: {e}", exc_info=True)
         llm_service = None
         summary_agent = None
+        smart_chat_agent = None
+        knowledge_service = None
 
 
 def setup_logging():
@@ -389,14 +434,25 @@ async def get_status():
     )
 
 
+class StartRecordingRequest(BaseModel):
+    """开始录音请求"""
+    app_id: Optional[str] = None  # 应用ID: 'voice-note', 'voice-chat', 'smart-chat'
+
+
 @app.post("/api/recording/start", response_model=StartRecordingResponse)
-async def start_recording():
-    """开始录音"""
+async def start_recording(request: StartRecordingRequest = None):
+    """开始录音
+    
+    Args:
+        request: 录音请求，包含app_id
+    """
     if not voice_service:
         raise HTTPException(status_code=503, detail="语音服务未初始化")
     
+    app_id = request.app_id if request else None
+    
     try:
-        success = voice_service.start_recording()
+        success = voice_service.start_recording(app_id=app_id)
         if success:
             return StartRecordingResponse(
                 success=True,
@@ -616,6 +672,113 @@ async def save_text_directly(request: SaveTextRequest):
         )
 
 
+@app.put("/api/records/{record_id}", response_model=SaveTextResponse)
+async def update_record(record_id: str, request: SaveTextRequest):
+    """更新指定的历史记录（用于自动保存）"""
+    if not voice_service or not voice_service.storage_provider:
+        error_info = SystemErrorInfo(
+            SystemError.STORAGE_CONNECTION_FAILED,
+            details="存储服务未初始化",
+            technical_info="voice_service or storage_provider is None"
+        )
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
+    
+    try:
+        # 检查记录是否存在
+        existing_record = voice_service.storage_provider.get_record(record_id)
+        if not existing_record:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_READ_FAILED,
+                details=f"记录不存在: {record_id}",
+                technical_info="Record not found"
+            )
+            return SaveTextResponse(
+                success=False,
+                message=error_info.user_message,
+                error=error_info.to_dict()
+            )
+        
+        # 构建更新的 metadata
+        metadata = {
+            'language': voice_service.config.get('asr.language', 'zh-CN'),
+            'provider': 'manual',
+            'input_method': 'keyboard',
+            'app_type': request.app_type,
+            'updated_at': voice_service._get_timestamp(),
+            'blocks': request.blocks,
+        }
+        
+        # 更新记录
+        success = voice_service.storage_provider.update_record(record_id, request.text, metadata)
+        
+        if success:
+            logger.info(f"[API] 已更新记录: {record_id}, blocks数据: {'有' if request.blocks else '无'}")
+            return SaveTextResponse(
+                success=True,
+                record_id=record_id,
+                message="记录已更新"
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="更新记录失败",
+                technical_info="update_record returned False"
+            )
+            return SaveTextResponse(
+                success=False,
+                message=error_info.user_message,
+                error=error_info.to_dict()
+            )
+            
+    except IOError as e:
+        # 磁盘空间或权限错误
+        error_msg = str(e)
+        if "No space left" in error_msg or "Disk quota exceeded" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details="磁盘空间不足",
+                suggestion="请清理磁盘空间后重试",
+                technical_info=error_msg
+            )
+        elif "Permission denied" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_PERMISSION_DENIED,
+                details="没有写入权限",
+                suggestion="请检查文件权限设置",
+                technical_info=error_msg
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.STORAGE_WRITE_FAILED,
+                details=f"更新记录失败: {error_msg}",
+                technical_info=error_msg
+            )
+        
+        logger.error(f"更新记录失败: {e}", exc_info=True)
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
+    except Exception as e:
+        # 其他未知错误
+        error_info = SystemErrorInfo(
+            SystemError.SYSTEM_INTERNAL_ERROR,
+            details=f"更新记录失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
+        logger.error(f"更新记录失败: {e}", exc_info=True)
+        return SaveTextResponse(
+            success=False,
+            message=error_info.user_message,
+            error=error_info.to_dict()
+        )
+
+
 @app.get("/api/records", response_model=ListRecordsResponse)
 async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
     """列出历史记录
@@ -707,10 +870,13 @@ async def get_record(record_id: str):
         if not record:
             raise HTTPException(status_code=404, detail="记录不存在")
         
+        logger.info(f"[get_record] 返回记录: id={record['id']}, app_type={record.get('app_type', 'voice-note')}, text长度={len(record.get('text', ''))}, metadata类型={type(record.get('metadata'))}")
+        
         return RecordItem(
             id=record['id'],
             text=record['text'],
             metadata=record.get('metadata', {}),
+            app_type=record.get('app_type', 'voice-note'),  # 添加 app_type
             created_at=record.get('created_at', '')
         )
     except HTTPException:
@@ -804,6 +970,124 @@ async def delete_records(request: DeleteRecordsRequest):
             "deleted_count": 0,
             "error": error_info.to_dict()
         }
+
+
+# ==================== 图片管理 API ====================
+
+class SaveImageRequest(BaseModel):
+    """保存图片请求"""
+    image_data: str = Field(..., description="Base64编码的图片数据")
+    filename: Optional[str] = Field(None, description="可选的文件名")
+
+
+class SaveImageResponse(BaseModel):
+    """保存图片响应"""
+    success: bool
+    image_url: Optional[str] = None
+    message: str
+    error: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/images/save", response_model=SaveImageResponse)
+async def save_image(request: SaveImageRequest):
+    """保存Base64编码的图片到本地
+    
+    Args:
+        request: 包含Base64图片数据的请求
+    
+    Returns:
+        保存后的图片URL（相对路径）
+    """
+    try:
+        # 解析 Base64 数据
+        # 格式可能是: data:image/png;base64,iVBORw0KG...
+        # 或直接是: iVBORw0KG...
+        image_data = request.image_data
+        if ',' in image_data:
+            # 移除 data URL 前缀
+            image_data = image_data.split(',', 1)[1]
+        
+        # 解码 Base64
+        try:
+            image_bytes = base64.b64decode(image_data)
+        except Exception as e:
+            return SaveImageResponse(
+                success=False,
+                message="图片数据格式错误",
+                error={
+                    "code": "INVALID_IMAGE_DATA",
+                    "details": f"Base64解码失败: {str(e)}"
+                }
+            )
+        
+        # 创建图片存储目录
+        images_dir = project_root / "data" / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 生成唯一文件名
+        if request.filename:
+            filename = request.filename
+        else:
+            # 使用时间戳 + UUID 生成唯一文件名
+            timestamp = int(asyncio.get_event_loop().time() * 1000)
+            unique_id = str(uuid.uuid4())[:8]
+            filename = f"{timestamp}-{unique_id}.png"
+        
+        # 保存图片
+        image_path = images_dir / filename
+        with open(image_path, 'wb') as f:
+            f.write(image_bytes)
+        
+        # 返回相对路径（前端可以通过 /api/images/{filename} 访问）
+        relative_url = f"images/{filename}"
+        
+        logger.info(f"[API] 已保存图片: {relative_url}, 大小: {len(image_bytes)} bytes")
+        
+        return SaveImageResponse(
+            success=True,
+            image_url=relative_url,
+            message="图片已保存"
+        )
+        
+    except Exception as e:
+        logger.error(f"保存图片失败: {e}", exc_info=True)
+        return SaveImageResponse(
+            success=False,
+            message="保存图片失败",
+            error={
+                "code": "SAVE_IMAGE_FAILED",
+                "details": str(e)
+            }
+        )
+
+
+@app.get("/api/images/{filename}")
+async def get_image(filename: str):
+    """获取图片文件
+    
+    Args:
+        filename: 图片文件名
+    
+    Returns:
+        图片文件
+    """
+    try:
+        # 安全检查：防止路径遍历攻击
+        if '..' in filename or '/' in filename or '\\' in filename:
+            raise HTTPException(status_code=400, detail="无效的文件名")
+        
+        image_path = project_root / "data" / "images" / filename
+        
+        if not image_path.exists():
+            raise HTTPException(status_code=404, detail="图片不存在")
+        
+        return FileResponse(image_path)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取图片失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="获取图片失败")
 
 
 # ==================== 音频设备管理 API ====================
@@ -1353,11 +1637,310 @@ async def generate_summary(request: SimpleChatRequest):
         return ChatResponse(success=False, error=error_info.to_dict())
 
 
-# ==================== WebSocket API ====================
+# ==================== SmartChat API ====================
+
+class SmartChatRequest(BaseModel):
+    """SmartChat 请求模型"""
+    message: str = Field(..., description="用户消息")
+    stream: bool = Field(default=False, description="是否流式输出")
+    use_history: bool = Field(default=True, description="是否使用对话历史")
+    use_knowledge: bool = Field(default=True, description="是否检索知识库")
+    knowledge_top_k: int = Field(default=3, description="知识库检索数量")
+    temperature: Optional[float] = Field(default=None, description="温度参数")
+    max_tokens: Optional[int] = Field(default=None, description="最大token数")
+
+
+class SmartChatHistoryResponse(BaseModel):
+    """对话历史响应"""
+    success: bool
+    total_turns: int
+    total_messages: int
+    has_knowledge_service: bool
+
+
+@app.post("/api/smartchat/chat")
+async def smart_chat(request: SmartChatRequest):
+    """SmartChat 智能对话
+    
+    功能：
+    - 支持多轮对话（自动管理上下文）
+    - 自动检索知识库（如果可用）
+    - 流式和非流式输出
+    
+    请求示例：
+    {
+        "message": "你好，请介绍一下知识库的内容",
+        "stream": true,
+        "use_history": true,
+        "use_knowledge": true
+    }
+    """
+    if not smart_chat_agent or not smart_chat_agent.is_available():
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="SmartChat 服务不可用",
+            technical_info="smart_chat_agent is None or not available"
+        )
+        return ChatResponse(
+            success=False,
+            error=error_info.to_dict()
+        )
+    
+    try:
+        # 准备参数
+        kwargs = {}
+        if request.temperature is not None:
+            kwargs['temperature'] = request.temperature
+        if request.max_tokens is not None:
+            kwargs['max_tokens'] = request.max_tokens
+        
+        if request.stream:
+            # 流式响应
+            async def generate():
+                try:
+                    result = await smart_chat_agent.chat(
+                        user_message=request.message,
+                        stream=True,
+                        use_history=request.use_history,
+                        use_knowledge=request.use_knowledge,
+                        knowledge_top_k=request.knowledge_top_k,
+                        **kwargs
+                    )
+                    
+                    async for chunk in result:
+                        yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                    
+                    yield "data: [DONE]\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"SmartChat 流式生成失败: {e}", exc_info=True)
+                    error_info = SystemErrorInfo(
+                        SystemError.LLM_SERVICE_UNAVAILABLE,
+                        details=f"对话失败: {str(e)}",
+                        technical_info=f"{type(e).__name__}: {str(e)}"
+                    )
+                    yield f"data: {json.dumps({'error': error_info.to_dict()}, ensure_ascii=False)}\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # 非流式响应
+            response = await smart_chat_agent.chat(
+                user_message=request.message,
+                stream=False,
+                use_history=request.use_history,
+                use_knowledge=request.use_knowledge,
+                knowledge_top_k=request.knowledge_top_k,
+                **kwargs
+            )
+            
+            return ChatResponse(success=True, message=response)
+    
+    except Exception as e:
+        logger.error(f"SmartChat 对话失败: {e}", exc_info=True)
+        error_msg = str(e).lower()
+        
+        if "rate" in error_msg or "limit" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_RATE_LIMIT,
+                details="请求频率超限",
+                technical_info=str(e)
+            )
+        elif "timeout" in error_msg:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_REQUEST_TIMEOUT,
+                details="请求超时",
+                technical_info=str(e)
+            )
+        else:
+            error_info = SystemErrorInfo(
+                SystemError.LLM_SERVICE_UNAVAILABLE,
+                details=f"对话失败: {str(e)}",
+                technical_info=f"{type(e).__name__}: {str(e)}"
+            )
+        
+        return ChatResponse(success=False, error=error_info.to_dict())
+
+
+@app.post("/api/smartchat/clear_history")
+async def clear_chat_history():
+    """清空对话历史"""
+    if not smart_chat_agent:
+        raise HTTPException(status_code=503, detail="SmartChat 服务不可用")
+    
+    smart_chat_agent.clear_history()
+    return {"success": True, "message": "对话历史已清空"}
+
+
+@app.get("/api/smartchat/history_status")
+async def get_history_status():
+    """获取对话历史状态"""
+    if not smart_chat_agent:
+        raise HTTPException(status_code=503, detail="SmartChat 服务不可用")
+    
+    summary = smart_chat_agent.get_conversation_summary()
+    return SmartChatHistoryResponse(success=True, **summary)
+
+
+# ==================== 知识库 API ====================
+
+class KnowledgeUploadRequest(BaseModel):
+    """知识库上传请求"""
+    filename: str = Field(..., description="文件名")
+    content: str = Field(..., description="文件内容")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="元数据")
+
+
+class KnowledgeSearchRequest(BaseModel):
+    """知识库搜索请求"""
+    query: str = Field(..., description="搜索查询")
+    top_k: int = Field(default=3, description="返回结果数量")
+
+
+@app.post("/api/knowledge/upload")
+async def upload_knowledge_file(request: KnowledgeUploadRequest):
+    """上传文件到知识库
+    
+    支持的文件类型：.md, .txt
+    """
+    if not knowledge_service or not knowledge_service.is_available():
+        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    
+    try:
+        result = await knowledge_service.upload_file(
+            filename=request.filename,
+            content=request.content,
+            metadata=request.metadata
+        )
+        return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"上传文件失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+
+
+@app.post("/api/knowledge/search")
+async def search_knowledge(request: KnowledgeSearchRequest):
+    """搜索知识库
+    
+    使用语义相似度搜索
+    """
+    if not knowledge_service or not knowledge_service.is_available():
+        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    
+    try:
+        results = await knowledge_service.search(
+            query=request.query,
+            top_k=request.top_k
+        )
+        return {"success": True, "results": results}
+    except Exception as e:
+        logger.error(f"搜索知识库失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+@app.get("/api/knowledge/files")
+async def list_knowledge_files():
+    """列出所有知识库文件"""
+    if not knowledge_service or not knowledge_service.is_available():
+        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    
+    try:
+        files = await knowledge_service.list_files()
+        return {"success": True, "files": files}
+    except Exception as e:
+        logger.error(f"列出文件失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"列出文件失败: {str(e)}")
+
+
+@app.delete("/api/knowledge/files/{file_id}")
+async def delete_knowledge_file(file_id: str):
+    """删除知识库文件"""
+    if not knowledge_service or not knowledge_service.is_available():
+        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    
+    try:
+        success = await knowledge_service.delete_file(file_id)
+        if success:
+            return {"success": True, "message": "文件已删除"}
+        else:
+            raise HTTPException(status_code=404, detail="文件不存在或删除失败")
+    except Exception as e:
+        logger.error(f"删除文件失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+
+
+@app.get("/api/knowledge/files/{file_id}/content")
+async def get_knowledge_file_content(file_id: str):
+    """获取文件内容"""
+    if not knowledge_service or not knowledge_service.is_available():
+        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    
+    try:
+        content = await knowledge_service.get_file_content(file_id)
+        if content is not None:
+            return {"success": True, "content": content}
+        else:
+            raise HTTPException(status_code=404, detail="文件不存在")
+    except Exception as e:
+        logger.error(f"获取文件内容失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
+
+
+# ==================== 轮询 API（替代 WebSocket）====================
+
+@app.get("/api/messages")
+async def get_messages(after_id: int = 0):
+    """
+    获取指定 ID 之后的所有消息（用于 Electron 主进程轮询）
+    
+    参数：
+        after_id: 上次接收到的最大消息 ID，返回此 ID 之后的所有新消息
+    
+    返回：
+        {
+            "success": true,
+            "messages": [
+                {
+                    "id": 1,
+                    "message": { "type": "text_update", "text": "..." },
+                    "timestamp": 1704326400.123
+                },
+                ...
+            ],
+            "server_time": 1704326400.456
+        }
+    """
+    try:
+        messages = message_buffer.get_after(after_id)
+        import time
+        return {
+            "success": True,
+            "messages": messages,
+            "server_time": time.time()
+        }
+    except Exception as e:
+        logger.error(f"[API] 获取消息失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "messages": []
+        }
+
+
+# ==================== WebSocket API（保留但标记为废弃）====================
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket端点 - 用于实时文本和状态更新
+    """WebSocket端点 - 用于实时文本和状态更新（单连接模式）
     
     消息类型：
     1. initial_state - 初始状态
@@ -1377,9 +1960,21 @@ async def websocket_endpoint(websocket: WebSocket):
     5. error - 错误消息
        { "type": "error", "error_type": "...", "message": "..." }
     """
+    global current_connection
+    
     await websocket.accept()
-    active_connections.add(websocket)
-    logger.info(f"[API] WebSocket连接已建立，当前连接数: {len(active_connections)}")
+    
+    # 关闭旧连接（如果存在）
+    if current_connection:
+        try:
+            logger.info("[API] 检测到旧连接，关闭旧连接")
+            await current_connection.close()
+        except Exception as e:
+            logger.warning(f"[API] 关闭旧连接失败: {e}")
+    
+    # 设置为当前连接
+    current_connection = websocket
+    logger.info("[API] WebSocket连接已建立（单连接模式）")
     
     try:
         # 发送初始状态（原生app设计：初始状态应该是干净的）
@@ -1409,8 +2004,10 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        active_connections.discard(websocket)
-        logger.info(f"[API] WebSocket连接已断开，当前连接数: {len(active_connections)}")
+        # 清空当前连接引用
+        if current_connection == websocket:
+            current_connection = None
+        logger.info("[API] WebSocket连接已断开")
 
 
 # ==================== 服务器启动 ====================

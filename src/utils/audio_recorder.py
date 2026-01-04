@@ -15,10 +15,11 @@ logger = get_logger("AudioDevice")
 
 
 class SoundDeviceRecorder(AudioRecorder):
-    """基于 sounddevice 的音频录制器，支持可选的VAD过滤"""
+    """基于 sounddevice 的音频录制器，支持可选的VAD过滤和音频处理（AGC+NS）"""
     
     def __init__(self, rate: int = 16000, channels: int = 1, chunk: int = 1024, 
                  device: Optional[int] = None, vad_config: Optional[dict] = None,
+                 audio_processing_config: Optional[dict] = None,
                  max_buffer_seconds: int = 60):
         """初始化音频录制器
         
@@ -31,6 +32,12 @@ class SoundDeviceRecorder(AudioRecorder):
                 - enabled: 是否启用VAD
                 - mode: VAD敏感度（0-3）
                 - 其他VAD参数...
+            audio_processing_config: 音频处理配置字典（可选），包含：
+                - enabled: 是否启用音频处理
+                - enable_agc: 是否启用AGC
+                - enable_ns: 是否启用NS
+                - agc_level: AGC级别（0-3）
+                - ns_level: NS级别（0-3）
             max_buffer_seconds: 最大缓冲时长（秒），超过后自动清理旧数据，默认60秒
         """
         self.rate = rate
@@ -54,21 +61,42 @@ class SoundDeviceRecorder(AudioRecorder):
         # 计算最大缓冲区大小（字节）：采样率 * 通道数 * 2字节(int16) * 秒数
         self.max_buffer_size = rate * channels * 2 * max_buffer_seconds
         
-        # VAD过滤器（可选功能）
-        self.vad_filter = None
+        # 音频处理器（AGC + NS）
+        self.audio_processor = None
+        if audio_processing_config and audio_processing_config.get('enabled', False):
+            try:
+                from .audio_processor import AudioProcessor
+                self.audio_processor = AudioProcessor(
+                    sample_rate=rate,
+                    channels=channels,
+                    enable_agc=audio_processing_config.get('enable_agc', True),
+                    enable_ns=audio_processing_config.get('enable_ns', True),
+                    agc_level=audio_processing_config.get('agc_level', 2),
+                    ns_level=audio_processing_config.get('ns_level', 2)
+                )
+                stats = self.audio_processor.get_stats()
+                logger.info(f"[音频] 音频处理器已启用: {stats}")
+            except Exception as e:
+                logger.error(f"[音频] 初始化音频处理器失败: {e}", exc_info=True)
+                self.audio_processor = None
+        
+        # AudioASRGateway（Audio到ASR的网关控制器，可选功能）
+        self.asr_gateway = None
         if vad_config:
             try:
-                from .vad_filter import VADFilter
-                self.vad_filter = VADFilter(vad_config)
-                if self.vad_filter.enabled:
-                    logger.info("[音频] VAD过滤器已启用")
+                from .audio_asr_gateway import AudioASRGateway
+                self.asr_gateway = AudioASRGateway(vad_config)
+                if self.asr_gateway.enabled:
+                    logger.info("[音频] AudioASRGateway已启用（VAD模式）")
+                else:
+                    logger.info("[音频] AudioASRGateway已启用（直通模式）")
             except ImportError as e:
-                logger.error(f"[音频] 导入VAD过滤器失败: {e}")
+                logger.error(f"[音频] 导入AudioASRGateway失败: {e}")
                 logger.error("[音频] 请确保已安装webrtcvad: pip install webrtcvad>=2.0.10")
-                self.vad_filter = None
+                self.asr_gateway = None
             except Exception as e:
-                logger.error(f"[音频] 初始化VAD过滤器失败: {e}", exc_info=True)
-                self.vad_filter = None
+                logger.error(f"[音频] 初始化AudioASRGateway失败: {e}", exc_info=True)
+                self.asr_gateway = None
         
         # 统计信息
         self._chunk_count = 0
@@ -153,10 +181,10 @@ class SoundDeviceRecorder(AudioRecorder):
             self._callback_errors = 0
             self._buffer_cleanups = 0
             
-            # 重置VAD状态（如果启用）
-            if self.vad_filter and self.vad_filter.enabled:
-                self.vad_filter.reset()
-                logger.debug("[音频] VAD过滤器已重置")
+            # 重置AudioASRGateway状态（如果启用）
+            if self.asr_gateway:
+                self.asr_gateway.reset()
+                logger.debug("[音频] AudioASRGateway已重置")
             
             logger.info(f"[音频] 创建音频输入流: samplerate={self.rate}, channels={self.channels}, blocksize={self.chunk}, device={self.device}")
             
@@ -215,6 +243,11 @@ class SoundDeviceRecorder(AudioRecorder):
             self.thread.start()
             logger.info("[音频] 音频消费线程已启动")
             
+            # 启动AudioASRGateway（会触发相应的回调）
+            if self.asr_gateway:
+                self.asr_gateway.start()
+                logger.debug("[音频] AudioASRGateway已启动")
+            
             self.state = RecordingState.RECORDING
             logger.info("[音频] 录音已开始，状态: RECORDING")
             
@@ -267,6 +300,11 @@ class SoundDeviceRecorder(AudioRecorder):
         
         logger.info("[音频] 停止录音...")
         self.running = False
+        
+        # 停止AudioASRGateway（会触发相应的回调）
+        if self.asr_gateway:
+            self.asr_gateway.stop()
+            logger.debug("[音频] AudioASRGateway已停止")
         
         if self.stream:
             try:
@@ -361,19 +399,28 @@ class SoundDeviceRecorder(AudioRecorder):
                     if consumed_chunks % 100 == 0:
                         logger.debug(f"[音频] 消费音频块 #{consumed_chunks}, 大小={len(data)}字节, 缓冲区总大小={len(self.audio_buffer)}字节")
                     
-                    # 实时发送音频数据块（用于流式 ASR）
+                    # 音频处理流程：原始音频 → AudioProcessor (AGC+NS) → AudioASRGateway (VAD) → ASR
+                    processed_audio = data
+                    
+                    # 步骤1：应用音频处理（AGC + NS）
+                    if self.audio_processor:
+                        try:
+                            processed_audio = self.audio_processor.process(processed_audio)
+                        except Exception as e:
+                            logger.error(f"[音频] 音频处理失败: {e}", exc_info=True)
+                    
+                    # 步骤2：实时发送音频数据块（通过AudioASRGateway进行VAD过滤）
                     if self.on_audio_chunk:
                         try:
-                            # VAD过滤（如果启用）
-                            if self.vad_filter and self.vad_filter.enabled:
-                                # 通过VAD过滤器处理音频数据
-                                processed_data = self.vad_filter.process(data)
-                                # 只发送非静音数据
-                                if processed_data:
-                                    self.on_audio_chunk(processed_data)
+                            # 通过AudioASRGateway处理音频数据
+                            if self.asr_gateway:
+                                final_data = self.asr_gateway.process(processed_audio)
+                                # 只发送非None的数据（None表示静音，不发送）
+                                if final_data is not None:
+                                    self.on_audio_chunk(final_data)
                             else:
-                                # VAD未启用，直接发送原始数据
-                                self.on_audio_chunk(data)
+                                # AudioASRGateway未初始化，直接发送处理后的数据
+                                self.on_audio_chunk(processed_audio)
                         except Exception as e:
                             logger.error(f"[音频] 音频数据块回调错误: {e}", exc_info=True)
             except queue.Empty:
@@ -386,13 +433,27 @@ class SoundDeviceRecorder(AudioRecorder):
         if self._buffer_cleanups > 0:
             logger.info(f"[音频] 缓冲区清理统计: 共清理 {self._buffer_cleanups} 次")
         
-        # 输出VAD统计信息（如果启用）
-        if self.vad_filter and self.vad_filter.enabled:
-            stats = self.vad_filter.get_stats()
-            logger.info(f"[VAD] 统计: 总帧数={stats['total_frames']}, "
+        # 输出AudioASRGateway统计信息（如果启用VAD）
+        if self.asr_gateway and self.asr_gateway.enabled:
+            stats = self.asr_gateway.get_stats()
+            logger.info(f"[AudioASRGateway] 统计: 总帧数={stats['total_frames']}, "
                        f"语音帧={stats['speech_frames']}, "
                        f"过滤帧={stats['filtered_frames']}, "
                        f"过滤率={stats['filter_rate']:.1f}%")
+    
+    def set_asr_gateway_callbacks(self, 
+                                  on_speech_start: Optional[Callable[[], None]] = None,
+                                  on_speech_end: Optional[Callable[[], None]] = None):
+        """
+        设置AudioASRGateway的ASR控制回调函数
+        
+        Args:
+            on_speech_start: 语音开始回调（应启动ASR）
+            on_speech_end: 语音结束回调（应停止ASR）
+        """
+        if self.asr_gateway:
+            self.asr_gateway.set_callbacks(on_speech_start, on_speech_end)
+            logger.debug("[音频] AudioASRGateway回调已设置")
     
     def set_on_audio_chunk_callback(self, callback: Optional[Callable[[bytes], None]]):
         """设置音频数据块回调函数（用于流式 ASR）"""

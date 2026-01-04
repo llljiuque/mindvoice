@@ -339,57 +339,63 @@ EOF
     return 1  # 端口未被占用
 }
 
-# 清理函数
+# 清理函数（优化版本：更快、更可靠）
 cleanup_processes() {
     local port=${1:-8765}
     print_info "正在清理进程..."
     
-    # 首先，查找并终止占用指定端口的进程
+    # 收集所有需要终止的进程 PID（一次性收集，避免重复查询）
+    local all_pids=""
+    
+    # 查找占用指定端口的进程
     if command -v lsof >/dev/null 2>&1; then
         local port_pids=$(lsof -ti :$port 2>/dev/null || true)
         if [ -n "$port_pids" ]; then
-            print_info "终止占用端口 $port 的进程..."
-            echo "$port_pids" | xargs kill -TERM 2>/dev/null || true
-            sleep 2
-            # 如果还在运行，强制终止
-            local remaining_pids=$(lsof -ti :$port 2>/dev/null || true)
-            if [ -n "$remaining_pids" ]; then
-                echo "$remaining_pids" | xargs kill -9 2>/dev/null || true
-                sleep 1
-            fi
+            all_pids="$all_pids $port_pids"
         fi
     fi
     
-    # 查找并终止 API 服务器进程
-    local api_pids=$(pgrep -f "api_server.py" || true)
+    # 查找 API 服务器进程
+    local api_pids=$(pgrep -f "api_server.py" 2>/dev/null || true)
     if [ -n "$api_pids" ]; then
-        print_info "终止 API 服务器进程..."
-        echo "$api_pids" | xargs kill -TERM 2>/dev/null || true
-        sleep 1
-        # 如果还在运行，强制终止
-        echo "$api_pids" | xargs kill -9 2>/dev/null || true
+        all_pids="$all_pids $api_pids"
     fi
     
-    # 查找并终止 Electron 进程（排除 grep 自身）
+    # 查找 Electron 进程（排除当前脚本进程）
     local electron_pids=$(pgrep -f "electron" 2>/dev/null | grep -v "^$$$" || true)
     if [ -n "$electron_pids" ]; then
-        print_info "终止 Electron 进程..."
-        echo "$electron_pids" | xargs kill -TERM 2>/dev/null || true
-        sleep 1
-        echo "$electron_pids" | xargs kill -9 2>/dev/null || true
+        all_pids="$all_pids $electron_pids"
     fi
     
-    # 查找并终止 Vite 进程（排除 grep 自身）
+    # 查找 Vite 进程（排除当前脚本进程）
     local vite_pids=$(pgrep -f "vite" 2>/dev/null | grep -v "^$$$" || true)
     if [ -n "$vite_pids" ]; then
-        print_info "终止 Vite 进程..."
-        echo "$vite_pids" | xargs kill -TERM 2>/dev/null || true
-        sleep 1
-        echo "$vite_pids" | xargs kill -9 2>/dev/null || true
+        all_pids="$all_pids $vite_pids"
     fi
     
-    # 等待端口完全释放
-    sleep 1
+    # 如果找到进程，统一终止
+    if [ -n "$all_pids" ]; then
+        # 去重并发送 TERM 信号
+        echo "$all_pids" | tr ' ' '\n' | sort -u | xargs kill -TERM 2>/dev/null || true
+        # 等待 0.5 秒让进程优雅退出
+        sleep 0.5
+        
+        # 检查哪些进程还在运行，强制终止
+        local remaining_pids=""
+        for pid in $all_pids; do
+            if kill -0 $pid 2>/dev/null; then
+                remaining_pids="$remaining_pids $pid"
+            fi
+        done
+        
+        if [ -n "$remaining_pids" ]; then
+            echo "$remaining_pids" | tr ' ' '\n' | xargs kill -9 2>/dev/null || true
+            sleep 0.3
+        fi
+    fi
+    
+    # 等待端口完全释放（缩短等待时间）
+    sleep 0.5
     
     print_success "进程清理完成"
 }
@@ -413,18 +419,23 @@ run_app() {
     if check_port $api_port $api_host; then
         print_warning "端口 $api_port 已被占用，正在清理相关进程..."
         cleanup_processes $api_port
-        sleep 3
         
         # 再次检查端口是否已释放
         if check_port $api_port $api_host; then
             print_error "端口 $api_port 清理后仍被占用，启动失败"
             print_info "占用端口的进程信息："
-            lsof -i :$api_port 2>/dev/null || print_info "  (无法获取进程信息)"
+            if command -v lsof >/dev/null 2>&1; then
+                lsof -i :$api_port 2>/dev/null || print_info "  (无法获取进程信息)"
+            else
+                print_info "  (lsof 命令不可用)"
+            fi
             print_info ""
             print_info "请手动关闭占用端口的进程，或使用其他端口："
             print_info "  python api_server.py --port <其他端口>"
-            print_info "查找占用端口的进程: lsof -i :$api_port"
-            print_info "或者手动终止进程: kill -9 \$(lsof -ti :$api_port)"
+            if command -v lsof >/dev/null 2>&1; then
+                print_info "查找占用端口的进程: lsof -i :$api_port"
+                print_info "或者手动终止进程: kill -9 \$(lsof -ti :$api_port)"
+            fi
             return 1
         else
             print_success "端口清理完成，继续启动..."
@@ -445,7 +456,7 @@ run_app() {
         local retry_count=0
         local api_started=false
         
-        # 检查服务器是否就绪的函数
+        # 检查服务器是否就绪的函数（优化版本 - 实时检查，非固定等待）
         check_api_ready() {
             local pid=$1
             local port=$2
@@ -456,26 +467,54 @@ run_app() {
                 return 1  # 进程不存在
             fi
             
-            # 等待端口绑定（最多等待 10 秒）
-            local max_wait=10
-            local waited=0
-            while [ $waited -lt $max_wait ]; do
-                if check_port $port $host; then
-                    # 端口被占用，说明服务器已启动
-                    # 进一步检查 HTTP 端点是否可访问（可选，但更可靠）
-                    if command -v curl >/dev/null 2>&1; then
-                        if curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://$host:$port/docs" | grep -q "200\|404"; then
-                            return 0  # 服务器就绪
-                        fi
-                    else
-                        # 如果没有 curl，只检查端口
-                        return 0  # 端口已绑定，认为服务器就绪
+            # 等待服务器就绪（最多等待 60 次，每次 0.5 秒 = 30 秒）
+            # API 服务器需要加载 ASR、LLM、Embedding 等模型，启动时间较长
+            # 注意：Embedding 模型首次加载可能需要 20-30 秒（即使已下载，加载到内存也需要时间）
+            # 注意：不是固定等待，而是每 0.5 秒检查一次，一旦就绪立即返回
+            local max_attempts=60
+            local attempt=0
+            local start_time=$(date +%s)
+            
+            while [ $attempt -lt $max_attempts ]; do
+                # 检查进程是否还在运行
+                if ! kill -0 $pid 2>/dev/null; then
+                    return 1  # 进程已退出
+                fi
+                
+                # 使用 HTTP 健康检查（使用根路径，更可靠）
+                if command -v curl >/dev/null 2>&1; then
+                    local http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 --connect-timeout 1 "http://$host:$port/" 2>/dev/null || echo "000")
+                    
+                    # 检查是否成功响应
+                    if [ "$http_code" = "200" ] || [ "$http_code" = "404" ] || [ "$http_code" = "307" ]; then
+                        local elapsed=$(($(date +%s) - start_time))
+                        echo ""  # 换行
+                        print_info "服务器就绪（实际等待: ${elapsed} 秒）"
+                        return 0  # 服务器就绪，立即返回
+                    fi
+                    
+                    # 每 1 秒显示一次进度和已等待时间
+                    if [ $((attempt % 2)) -eq 0 ]; then
+                        local elapsed=$(($(date +%s) - start_time))
+                        echo -ne "\r[INFO] 检查中... (已等待 ${elapsed} 秒) "
+                    fi
+                else
+                    # 如果没有 curl，使用端口检查作为备用方案
+                    if check_port $port $host; then
+                        # 端口已绑定，再等待一下确保服务器完全启动
+                        sleep 1
+                        local elapsed=$(($(date +%s) - start_time))
+                        echo ""  # 换行
+                        print_info "服务器就绪（实际等待: ${elapsed} 秒）"
+                        return 0
                     fi
                 fi
-                sleep 1
-                waited=$((waited + 1))
+                
+                sleep 0.5
+                attempt=$((attempt + 1))
             done
             
+            echo ""  # 换行
             return 1  # 超时
         }
         
@@ -484,29 +523,68 @@ run_app() {
             if check_port $api_port $api_host; then
                 print_warning "端口 $api_port 仍被占用，清理相关进程..."
                 cleanup_processes $api_port
-                sleep 3
+                sleep 1
             fi
             
-            python "$PROJECT_DIR/api_server.py" --port $api_port --host $api_host &
+            # 启动 API 服务器（后台运行，输出重定向到日志文件）
+            # 确保使用虚拟环境中的 Python
+            if [ -f "$VENV_DIR/bin/activate" ]; then
+                source "$VENV_DIR/bin/activate"
+            fi
+            
+            # 创建日志目录（如果不存在）
+            LOG_DIR="$PROJECT_DIR/logs"
+            mkdir -p "$LOG_DIR"
+            API_LOG_FILE="$LOG_DIR/api_server_$(date +%Y%m%d_%H%M%S).log"
+            
+            # 启动 API 服务器，输出到日志文件
+            python "$PROJECT_DIR/api_server.py" --port $api_port --host $api_host > "$API_LOG_FILE" 2>&1 &
             API_PID=$!
             
+            print_info "API 服务器日志文件: $API_LOG_FILE"
+            
+            # 给进程一点时间启动
+            sleep 0.5
+            
+            # 检查进程是否还在运行（如果立即退出说明启动失败）
+            if ! kill -0 $API_PID 2>/dev/null; then
+                retry_count=$((retry_count + 1))
+                print_warning "API 服务器进程启动后立即退出（尝试 $retry_count/$max_retries）"
+                cleanup_processes $api_port
+                sleep 1
+                if [ $retry_count -lt $max_retries ]; then
+                    print_info "重试启动 API 服务器..."
+                fi
+                continue
+            fi
+            
             # 等待并检查 API 服务器是否就绪
+            print_info "等待 API 服务器就绪..."
+            print_info "正在初始化服务："
+            print_info "  - 语音识别服务 (ASR)"
+            print_info "  - 大语言模型服务 (LLM)"
+            print_info "  - 知识库服务 (Embedding 模型加载可能需要 20-30 秒)"
+            print_info "  - 智能对话代理 (Agents)"
+            print_info "（首次启动可能需要 20-30 秒，请稍候...）"
             if check_api_ready $API_PID $api_port $api_host; then
+                echo ""  # 换行（清除进度点）
                 api_started=true
-                print_success "API 服务器启动成功（PID: $API_PID）"
+                print_success "API 服务器启动成功（PID: $API_PID，端口: $api_port）"
+                print_info "查看详细日志: tail -f $API_LOG_FILE"
             else
+                echo ""  # 换行（清除进度点）
                 retry_count=$((retry_count + 1))
                 if kill -0 $API_PID 2>/dev/null; then
                     print_warning "API 服务器进程存在但未就绪（尝试 $retry_count/$max_retries）"
                     kill $API_PID 2>/dev/null || true
-                    sleep 2
+                    sleep 0.5
                 else
                     print_warning "API 服务器启动失败（尝试 $retry_count/$max_retries）"
                 fi
                 
                 # 清理可能残留的进程
                 cleanup_processes $api_port
-                sleep 2
+                sleep 1
                 
                 if [ $retry_count -lt $max_retries ]; then
                     print_info "重试启动 API 服务器..."

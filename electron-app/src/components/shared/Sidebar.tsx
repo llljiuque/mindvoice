@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './Sidebar.css';
 
-export type AppView = 'voice-note' | 'voice-chat' | 'voice-zen' | 'history' | 'settings' | 'about';
+export type AppView = 'voice-note' | 'smart-chat' | 'knowledge-base' | 'voice-zen' | 'history' | 'settings' | 'about';
 
 interface SidebarProps {
   activeView: AppView;
@@ -12,9 +12,9 @@ interface SidebarProps {
 declare global {
   interface Window {
     electronAPI?: {
-      minimizeWindow: () => Promise<void>;
+      setLandscapeMode: () => Promise<void>;
+      setPortraitMode: () => Promise<void>;
       maximizeWindow: () => Promise<void>;
-      restoreDefaultSize: () => Promise<void>;
       closeWindow: () => Promise<void>;
       quitApp: () => Promise<void>;
     };
@@ -46,9 +46,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
     setMenuOpen(!menuOpen);
   };
 
-  const handleMinimize = async () => {
+  const handleSetPortrait = async () => {
     if (window.electronAPI) {
-      await window.electronAPI.minimizeWindow();
+      await window.electronAPI.setPortraitMode();
+    }
+    setMenuOpen(false);
+  };
+
+  const handleSetLandscape = async () => {
+    if (window.electronAPI) {
+      await window.electronAPI.setLandscapeMode();
     }
     setMenuOpen(false);
   };
@@ -56,13 +63,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
   const handleMaximize = async () => {
     if (window.electronAPI) {
       await window.electronAPI.maximizeWindow();
-    }
-    setMenuOpen(false);
-  };
-
-  const handleRestoreDefault = async () => {
-    if (window.electronAPI) {
-      await window.electronAPI.restoreDefaultSize();
     }
     setMenuOpen(false);
   };
@@ -95,18 +95,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           </button>
           {menuOpen && (
             <div className="window-menu">
-              <button className="window-menu-item" onClick={handleMinimize}>
-                <span className="menu-item-icon">➖</span>
-                <span>Minimize</span>
+              <button className="window-menu-item" onClick={handleSetPortrait}>
+                <span className="menu-item-icon">📱</span>
+                <span>Portrait</span>
+              </button>
+              <button className="window-menu-item" onClick={handleSetLandscape}>
+                <span className="menu-item-icon">🖥️</span>
+                <span>Landscape</span>
               </button>
               <button className="window-menu-item" onClick={handleMaximize}>
                 <span className="menu-item-icon">⛶</span>
                 <span>Maximize</span>
               </button>
-              <button className="window-menu-item" onClick={handleRestoreDefault}>
-                <span className="menu-item-icon">📱</span>
-                <span>Default</span>
-              </button>
+              
               <div className="window-menu-divider"></div>
               <button className="window-menu-item" onClick={handleClose}>
                 <span className="menu-item-icon">⬇</span>
@@ -134,11 +135,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           </button>
           
           <button
-            className={`nav-item ${activeView === 'voice-chat' ? 'active' : ''}`}
-            onClick={() => onViewChange('voice-chat')}
-            aria-label="语音助手"
-            aria-current={activeView === 'voice-chat' ? 'page' : undefined}
-            title="语音助手"
+            className={`nav-item ${activeView === 'smart-chat' ? 'active' : ''}`}
+            onClick={() => onViewChange('smart-chat')}
+            aria-label="智能助手"
+            aria-current={activeView === 'smart-chat' ? 'page' : undefined}
+            title="智能助手 - 支持知识库检索"
           >
             <span className="nav-icon" aria-hidden="true">💬</span>
           </button>
@@ -156,13 +157,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           <div className="nav-divider"></div>
           
           <button
+            className={`nav-item ${activeView === 'knowledge-base' ? 'active' : ''}`}
+            onClick={() => onViewChange('knowledge-base')}
+            aria-label="知识库"
+            aria-current={activeView === 'knowledge-base' ? 'page' : undefined}
+            title="知识库管理"
+          >
+            <span className="nav-icon" aria-hidden="true">📚</span>
+          </button>
+          
+          <button
             className={`nav-item ${activeView === 'history' ? 'active' : ''}`}
             onClick={() => onViewChange('history')}
             aria-label="历史记录"
             aria-current={activeView === 'history' ? 'page' : undefined}
             title="历史记录"
           >
-            <span className="nav-icon" aria-hidden="true">📚</span>
+            <span className="nav-icon" aria-hidden="true">📋</span>
           </button>
           
           <button

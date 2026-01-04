@@ -177,6 +177,307 @@ type WSMessageType =
 }
 ```
 
+## 数据库技术规范 ⭐
+
+### 数据库选型
+- **主数据库**: SQLite 3
+- **位置**: `~/.voice_assistant/history.db`
+- **用途**: 存储历史记录、元数据、笔记信息
+
+### 数据库表结构
+
+#### records 表
+```sql
+CREATE TABLE IF NOT EXISTS records (
+    id TEXT PRIMARY KEY,                -- UUID格式记录ID
+    text TEXT NOT NULL,                 -- 笔记文本内容
+    metadata TEXT,                      -- JSON格式元数据
+    app_type TEXT DEFAULT 'voice-note', -- 应用类型
+    created_at TIMESTAMP                -- 创建时间（本地时区）
+)
+```
+
+**字段说明**：
+- `id`: 使用 UUID v4，如 `9ca7eb50-d029-4397-8350-ff7e94b2edd9`
+- `text`: 纯文本内容，用于搜索和预览
+- `metadata`: JSON字符串，包含 blocks、noteInfo 等结构化数据
+- `app_type`: 标识来源应用，用于筛选
+- `created_at`: **必须使用本地时间**，格式 `YYYY-MM-DD HH:MM:SS`
+
+### metadata 字段结构
+```json
+{
+  "blocks": [
+    {
+      "id": "block-xxx",
+      "type": "paragraph",
+      "content": "段落内容",
+      "startTime": 1704254400000,
+      "endTime": 1704254410000,
+      "isAsrWriting": false
+    }
+  ],
+  "noteInfo": {
+    "title": "会议纪要",
+    "type": "会议",
+    "relatedPeople": "张三, 李四",
+    "location": "会议室A",
+    "startTime": "2026-01-04 10:00:00",
+    "endTime": "2026-01-04 11:30:00"
+  },
+  "language": "zh-CN",
+  "provider": "volcano",
+  "app_type": "voice-note"
+}
+```
+
+### 时间处理规范 ⚠️ 重要
+
+#### 规则1：保存时使用本地时间
+```python
+# Python 后端 - 正确做法
+from datetime import datetime
+
+def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        INSERT INTO records (id, text, metadata, app_type, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (record_id, text, json_metadata, app_type, created_at))
+```
+
+**禁止做法**：
+```python
+# ❌ 错误：依赖数据库的 CURRENT_TIMESTAMP（默认UTC时间）
+cursor.execute('''
+    INSERT INTO records (id, text, metadata, app_type)
+    VALUES (?, ?, ?, ?)
+''')  # created_at 会自动使用 CURRENT_TIMESTAMP（UTC时间）
+```
+
+#### 规则2：路径展开
+```python
+# ✅ 正确：必须展开 ~ 路径
+from pathlib import Path
+
+db_path = config.get('path', 'history.db')
+self.db_path = Path(db_path).expanduser()  # 展开 ~ 为用户主目录
+```
+
+**禁止做法**：
+```python
+# ❌ 错误：不展开会创建在项目根目录的 ~ 文件夹
+self.db_path = Path(db_path)  # ~/.voice_assistant/history.db 变成 ./~/.voice_assistant/history.db
+```
+
+### 数据库操作规范
+
+#### 1. 创建记录
+```python
+def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
+    """保存新记录"""
+    import uuid
+    record_id = str(uuid.uuid4())
+    app_type = metadata.get('app_type', 'voice-note')
+    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    cursor.execute('''
+        INSERT INTO records (id, text, metadata, app_type, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (record_id, text, json.dumps(metadata, ensure_ascii=False), app_type, created_at))
+    
+    return record_id
+```
+
+#### 2. 更新记录
+```python
+def update_record(self, record_id: str, text: str, metadata: Dict[str, Any]) -> bool:
+    """更新现有记录（增量保存）"""
+    cursor.execute('''
+        UPDATE records
+        SET text = ?, metadata = ?
+        WHERE id = ?
+    ''', (text, json.dumps(metadata, ensure_ascii=False), record_id))
+    
+    return cursor.rowcount > 0
+```
+
+#### 3. 查询记录
+```python
+def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
+    """获取单条记录"""
+    cursor.execute('''
+        SELECT id, text, metadata, app_type, created_at
+        FROM records
+        WHERE id = ?
+    ''', (record_id,))
+    
+    row = cursor.fetchone()
+    if row:
+        return {
+            'id': row[0],
+            'text': row[1],
+            'metadata': json.loads(row[2]) if row[2] else {},
+            'app_type': row[3] or 'voice-note',
+            'created_at': row[4]
+        }
+    return None
+```
+
+#### 4. 列表查询
+```python
+def list_records(self, limit: int = 100, offset: int = 0, app_type: Optional[str] = None):
+    """分页查询记录，支持应用类型筛选"""
+    if app_type:
+        cursor.execute('''
+            SELECT id, text, metadata, app_type, created_at
+            FROM records
+            WHERE app_type = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        ''', (app_type, limit, offset))
+    else:
+        cursor.execute('''
+            SELECT id, text, metadata, app_type, created_at
+            FROM records
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        ''', (limit, offset))
+```
+
+### 数据恢复规范
+
+#### 前端恢复逻辑
+```typescript
+// App.tsx - loadRecord 函数
+const loadRecord = async (recordId: string) => {
+  const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
+  const data = await response.json();
+  
+  if (data.text) {
+    setText(data.text);
+    
+    // 检查是否有 blocks 数据
+    if (data.metadata?.blocks && Array.isArray(data.metadata.blocks) && data.metadata.blocks.length > 0) {
+      // 有 blocks：直接恢复
+      setInitialBlocks(data.metadata.blocks);
+    } else {
+      // 无 blocks：从纯文本创建
+      const textBlocks = data.text.split('\n')
+        .filter(line => line.trim())
+        .map((line, index) => ({
+          id: `block-restored-${Date.now()}-${index}`,
+          type: 'paragraph',
+          content: line,
+          isAsrWriting: false,
+        }));
+      
+      setInitialBlocks([noteInfoBlock, ...textBlocks]);
+    }
+    
+    setActiveView('voice-note');
+    startWorkSession('voice-note');
+  }
+};
+```
+
+### 数据库迁移规范
+
+#### 自动迁移逻辑
+```python
+def _create_table(self):
+    """创建表并自动迁移"""
+    conn = sqlite3.connect(str(self.db_path))
+    cursor = conn.cursor()
+    
+    # 创建表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS records (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            metadata TEXT,
+            app_type TEXT DEFAULT 'voice-note',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 检查是否需要添加字段
+    cursor.execute("PRAGMA table_info(records)")
+    columns = [col[1] for col in cursor.fetchall()]
+    
+    if 'app_type' not in columns:
+        cursor.execute('ALTER TABLE records ADD COLUMN app_type TEXT DEFAULT "voice-note"')
+        logger.info("[Storage] 数据库迁移：已添加 app_type 字段")
+    
+    conn.commit()
+    conn.close()
+```
+
+### 常见问题和解决方案
+
+#### 问题1：时间显示相差8小时
+**原因**：数据库使用 UTC 时间，前端未转换  
+**解决**：保存时使用 `datetime.now()` 而非 `CURRENT_TIMESTAMP`
+
+#### 问题2：路径展开失败
+**原因**：`Path(~)` 不会自动展开波浪号  
+**解决**：使用 `Path().expanduser()`
+
+#### 问题3：恢复内容为空
+**原因**：`blocks` 为 `null`，但未从纯文本创建  
+**解决**：检查 `blocks` 存在性和长度，不存在时从 `text` 创建
+
+#### 问题4：多个数据库文件
+**原因**：路径配置错误或路径未展开  
+**解决**：确保使用 `.expanduser()` 并检查配置路径
+
+### 数据库维护
+
+#### 数据备份
+```bash
+# 手动备份
+cp ~/.voice_assistant/history.db ~/.voice_assistant/history.db.backup
+
+# 查看记录数
+sqlite3 ~/.voice_assistant/history.db "SELECT COUNT(*) FROM records;"
+```
+
+#### 数据清理
+```python
+def delete_old_records(self, days: int = 90):
+    """删除N天前的记录"""
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    cursor.execute('DELETE FROM records WHERE created_at < ?', (cutoff_date,))
+```
+
+### 性能优化
+
+#### 索引建议
+```sql
+-- 为常用查询字段创建索引
+CREATE INDEX idx_created_at ON records(created_at DESC);
+CREATE INDEX idx_app_type ON records(app_type);
+CREATE INDEX idx_app_type_created_at ON records(app_type, created_at DESC);
+```
+
+#### 批量操作
+```python
+# 使用事务批量插入
+conn = self._get_connection()
+try:
+    cursor = conn.cursor()
+    cursor.executemany('''
+        INSERT INTO records (id, text, metadata, app_type, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', records_batch)
+    conn.commit()
+except Exception as e:
+    conn.rollback()
+    raise
+finally:
+    conn.close()
+```
+
 ## 错误处理规则
 
 ### 前端错误处理

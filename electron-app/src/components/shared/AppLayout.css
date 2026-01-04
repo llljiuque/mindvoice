@@ -85,7 +85,7 @@
 /* 功能按钮区域 */
 .app-actions {
   display: flex;
-  gap: 12px;
+  gap: 16px;
   align-items: center;
   flex-wrap: wrap;
 }

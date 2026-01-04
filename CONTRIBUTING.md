@@ -186,7 +186,7 @@ Please read and follow these project-specific rules:
 
 1. **Version Management**: 
    - Only modify version in `electron-app/src/version.ts`
-   - Use `./update_version.sh` script for version updates
+   - Use `./scripts/update_version.sh` script for version updates
    - See [VERSION_MANAGEMENT.md](docs/VERSION_MANAGEMENT.md)
 
 2. **Date/Time Usage**:

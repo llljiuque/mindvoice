@@ -1,16 +1,16 @@
 .block {
   display: flex;
   align-items: flex-start;
-  gap: 2px;
-  padding: 2px;
-  min-height: 1.8em;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  min-height: 2.5em;
   position: relative;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   transition: all var(--transition-fast);
-  background: rgba(99, 102, 241, 0.06);
+  background: transparent;
 }
 
 .block-content-wrapper {
@@ -18,11 +18,11 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-xs);
 }
 
 .block:hover {
-  background: rgba(99, 102, 241, 0.08);
+  background: rgba(99, 102, 241, 0.03);
 }
 
 .block:hover .block-handle {
@@ -37,9 +37,9 @@
   opacity: 0;
   transition: all var(--transition-fast);
   cursor: grab;
-  padding: 2px;
+  padding: var(--space-xs);
   color: var(--color-text-tertiary);
-  font-size: 14px;
+  font-size: var(--font-size-sm);
   display: flex;
   align-items: center;
   height: 28px;
@@ -51,31 +51,31 @@
   opacity: 0;
   transition: all var(--transition-fast);
   cursor: pointer;
-  padding: 4px 8px;
+  padding: var(--space-xs) var(--space-sm);
   background: transparent;
   border: none;
   color: var(--color-text-tertiary);
-  font-size: 16px;
+  font-size: var(--font-size-base);
   display: flex;
   align-items: center;
   justify-content: center;
   height: 28px;
+  min-width: 36px;
   border-radius: var(--radius-sm);
   position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
+  right: var(--space-sm);
+  top: var(--space-sm);
   z-index: 10;
 }
 
 .block-delete-btn:hover {
-  color: #ef4444;
+  color: var(--color-danger);
   background: rgba(239, 68, 68, 0.1);
-  transform: translateY(-50%) scale(1.1);
+  transform: scale(1.05);
 }
 
 .block-delete-btn:active {
-  transform: translateY(-50%) scale(0.95);
+  transform: scale(0.95);
 }
 
 .block-handle:hover {
@@ -97,16 +97,18 @@
   width: 100%;
   min-width: 0;
   outline: none;
-  min-height: 1.8em;
-  padding: 2px;
+  min-height: 2em;
+  padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
   word-wrap: break-word;
   white-space: pre-wrap;
   box-sizing: border-box;
   -webkit-user-select: text;
   user-select: text;
   cursor: text;
+  /* 优化文本渲染，减少布局抖动 */
+  contain: layout style;
 }
 
 .block-content:empty:before {
@@ -119,7 +121,8 @@
 }
 
 .block-content:focus {
-  outline: none;
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .block-content[contenteditable="true"] {
@@ -134,16 +137,16 @@
 
 /* 块类型样式 */
 .block-paragraph {
-  font-size: 16px;
-  line-height: 1.7;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
   color: var(--color-text-primary);
   letter-spacing: 0.01em;
 }
 
 .block-h1 {
-  font-size: 36px;
+  font-size: var(--font-size-4xl);
   font-weight: 800;
-  line-height: 1.2;
+  line-height: var(--line-height-tight);
   color: var(--color-text-primary);
   margin-top: 0;
   margin-bottom: 0;
@@ -151,9 +154,9 @@
 }
 
 .block-h2 {
-  font-size: 28px;
+  font-size: var(--font-size-3xl);
   font-weight: 700;
-  line-height: 1.3;
+  line-height: var(--line-height-tight);
   color: var(--color-text-primary);
   margin-top: 0;
   margin-bottom: 0;
@@ -161,9 +164,9 @@
 }
 
 .block-h3 {
-  font-size: 22px;
+  font-size: var(--font-size-xl);
   font-weight: 600;
-  line-height: 1.4;
+  line-height: var(--line-height-normal);
   color: var(--color-text-primary);
   margin-top: 0;
   margin-bottom: 0;
@@ -172,8 +175,8 @@
 
 .block-bulleted-list,
 .block-numbered-list {
-  font-size: 16px;
-  line-height: 1.7;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
   color: var(--color-text-primary);
   padding-left: 28px;
   position: relative;
@@ -182,18 +185,18 @@
 .block-bulleted-list:before {
   content: '•';
   position: absolute;
-  left: 8px;
+  left: var(--space-sm);
   color: var(--color-primary);
   font-weight: 700;
-  font-size: 18px;
+  font-size: var(--font-size-lg);
 }
 
 .block-code {
   font-family: 'SFMono-Regular', 'Monaco', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
   background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  padding: 2px;
+  padding: var(--space-md);
   border-radius: var(--radius-md);
   color: #dc2626;
   border: 1px solid var(--color-border);
@@ -202,41 +205,57 @@
 
 /* ASR正在写入的块高亮样式 */
 .block-asr-writing-container {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(99, 102, 241, 0.12) 100%);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(99, 102, 241, 0.1) 100%);
   border-left: 3px solid var(--color-primary);
   animation: asr-writing-pulse 2s ease-in-out infinite;
   box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.1);
+  padding: var(--space-md) var(--space-lg);
 }
 
 .block-asr-writing-container:hover {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0.14) 100%);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(99, 102, 241, 0.12) 100%);
 }
 
 .block-asr-writing {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.05) 0%, rgba(99, 102, 241, 0.1) 100%);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  background: transparent;
 }
 
 @keyframes asr-writing-pulse {
   0%, 100% {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(99, 102, 241, 0.12) 100%);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(99, 102, 241, 0.1) 100%);
     box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.1);
   }
   50% {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(99, 102, 241, 0.16) 100%);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0.14) 100%);
     box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2);
   }
 }
 
-/* 小结块特殊样式 */
+/* 小结块特殊样式 - 更突出的设计 */
 .block-summary-container {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.12) 100%);
-  border-left: 3px solid #10b981;
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.1);
+  background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
+  border: 2px solid #10b981;
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg) var(--space-xl);
+  margin: var(--space-lg) 0;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.15);
+  position: relative;
+}
+
+.block-summary-container::before {
+  content: '✨ AI 生成的小结';
+  display: block;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: #10b981;
+  margin-bottom: var(--space-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .block-summary-container:hover {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.14) 100%);
+  background: linear-gradient(135deg, #d1fae5 0%, #ecfdf5 100%);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.2);
 }
 
 .block-summary-container .block-handle {
@@ -247,30 +266,30 @@
 .block-summary-container .block-content {
   color: var(--color-text-primary);
   font-weight: 400;
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
 }
 
-/* 小结块内的标题（第一行）使用更大字号和粗体 */
 .block-summary-container .block-content::first-line {
-  font-size: 20px;
+  font-size: var(--font-size-xl);
   font-weight: 700;
   color: #10b981;
   letter-spacing: -0.2px;
 }
 
-/* Note-Info 特殊块样式 */
+/* Note-Info 特殊块样式 - 更柔和的设计 */
 .block-note-info-container {
-  background: var(--color-bg-primary);
-  border: 2px solid var(--color-primary);
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+  border: 1px solid #c7d2fe;
   border-radius: var(--radius-lg);
-  margin-bottom: 2px;
-  box-shadow: var(--shadow-md);
+  margin-bottom: var(--space-lg);
+  padding: var(--space-lg) var(--space-xl);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08);
 }
 
 .block-note-info-container:hover {
-  background: var(--color-bg-primary);
-  box-shadow: var(--shadow-lg);
+  background: linear-gradient(135deg, #e0e7ff 0%, #ede9fe 100%);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.12);
 }
 
 .block-note-info-container .block-handle {
@@ -278,17 +297,29 @@
   color: var(--color-primary);
 }
 
+/* 隐藏 note-info 块的删除按钮 - 不允许删除笔记信息 */
+.block-note-info-container .block-delete-btn {
+  display: none !important;
+}
+
+/* 隐藏 ASR 正在录入的块的删除按钮 - 防止误删正在录入的内容 */
+.block-asr-writing-container .block-delete-btn {
+  display: none !important;
+}
+
 .block-note-info {
-  font-size: 14px;
-  line-height: 1.8;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
   color: var(--color-text-secondary);
-  padding: 2px;
+  padding: var(--space-sm) var(--space-md);
   cursor: pointer;
   min-height: 48px;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-base);
 }
 
 .block-note-info:hover {
-  background: var(--color-bg-secondary);
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .block-note-info:empty:before {
@@ -299,16 +330,16 @@
 .block-note-info-edit {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
 }
 
 .note-info-input {
   width: 100%;
-  padding: 2px;
-  font-size: 14px;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-sm);
   color: var(--color-text-primary);
-  background: var(--color-bg-secondary);
+  background: rgba(255, 255, 255, 0.8);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   transition: all var(--transition-base);
@@ -327,10 +358,10 @@
 }
 
 .note-info-time {
-  padding: 2px;
-  font-size: 14px;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
+  background: rgba(255, 255, 255, 0.8);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
@@ -340,7 +371,7 @@
 .block-buffer {
   background: transparent;
   pointer-events: none;
-  min-height: 200px;
+  min-height: 40vh;
 }
 
 .block-buffer:hover {
@@ -350,3 +381,61 @@
 .block-buffer .block-handle {
   display: none;
 }
+
+/* 图片块样式 */
+.block-image-container {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  margin: var(--space-md) 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  transition: all var(--transition-base);
+}
+
+.block-image-container:hover {
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.block-image-container .block-handle {
+  opacity: 1;
+  color: #64748b;
+}
+
+.block-image-wrapper {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.block-image {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  object-fit: contain;
+  background: var(--color-bg-primary);
+}
+
+.block-image-caption {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  text-align: center;
+  padding: var(--space-xs) var(--space-sm);
+  font-style: italic;
+}
+
+.block-image-error {
+  width: 100%;
+  padding: var(--space-lg);
+  text-align: center;
+  color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.05);
+  border: 1px dashed var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+

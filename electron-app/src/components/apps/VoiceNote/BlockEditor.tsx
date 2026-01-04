@@ -3,7 +3,7 @@ import { TimelineIndicator } from './TimelineIndicator';
 import './BlockEditor.css';
 import './Block.css';
 
-export type BlockType = 'note-info' | 'paragraph' | 'h1' | 'h2' | 'h3' | 'bulleted-list' | 'numbered-list' | 'code';
+export type BlockType = 'note-info' | 'paragraph' | 'h1' | 'h2' | 'h3' | 'bulleted-list' | 'numbered-list' | 'code' | 'image';
 
 export interface NoteInfo {
   title: string;
@@ -24,13 +24,16 @@ export interface Block {
   endTime?: number;
   isSummary?: boolean;
   isBufferBlock?: boolean; // 标识底部缓冲块
+  imageUrl?: string; // 图片 URL（相对路径或绝对路径）
+  imageCaption?: string; // 图片说明文字
 }
 
 interface BlockEditorProps {
-  initialContent?: string;
   initialBlocks?: Block[];
   onContentChange?: (content: string, isDefiniteUtterance?: boolean) => void;
   onNoteInfoChange?: (noteInfo: NoteInfo) => void;
+  onBlockFocus?: (blockId: string) => void;
+  onBlockBlur?: (blockId: string) => void;
   isRecording?: boolean;
 }
 
@@ -96,7 +99,7 @@ function createBlocksFromContent(content: string): Block[] {
     // 处理小结块之前的普通内容
     if (match.index > lastIndex) {
       const beforeContent = content.substring(lastIndex, match.index);
-      const lines = beforeContent.split('\n').filter(line => line.trim() || line === '');
+      const lines = beforeContent.split('\n').filter(line => line.trim());
       lines.forEach(line => {
         contentBlocks.push({
           id: `block-${timestamp}-${blockIndex++}-${Math.random()}`,
@@ -123,7 +126,7 @@ function createBlocksFromContent(content: string): Block[] {
   // 处理剩余的普通内容
   if (lastIndex < content.length) {
     const remainingContent = content.substring(lastIndex);
-    const lines = remainingContent.split('\n').filter(line => line.trim() || line === '');
+    const lines = remainingContent.split('\n').filter(line => line.trim());
     lines.forEach(line => {
       contentBlocks.push({
         id: `block-${timestamp}-${blockIndex++}-${Math.random()}`,
@@ -136,7 +139,7 @@ function createBlocksFromContent(content: string): Block[] {
   
   // 如果没有小结块，使用原来的简单拆分逻辑
   if (contentBlocks.length === 0) {
-    content.split('\n').forEach((line, i) => {
+    content.split('\n').filter(line => line.trim()).forEach((line, i) => {
       contentBlocks.push({
         id: `block-${timestamp}-${i}-${Math.random()}`,
         type: 'paragraph' as BlockType,
@@ -152,8 +155,9 @@ function createBlocksFromContent(content: string): Block[] {
 function blocksToContent(blocks: Block[]): string {
   // 排除 note-info 和 buffer block
   // 小结block使用特殊分隔符，防止被拆分
+  // 同时过滤掉内容为空的 block（避免产生空行）
   return blocks
-    .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
+    .filter(b => b.type !== 'note-info' && !b.isBufferBlock && (b.isSummary || b.content.trim()))
     .map((b) => {
       if (b.isSummary) {
         // 小结块使用特殊标记包裹，保持完整性
@@ -165,13 +169,20 @@ function blocksToContent(blocks: Block[]): string {
 }
 
 export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
-  initialContent = '',
   initialBlocks,
   onContentChange,
   onNoteInfoChange,
+  onBlockFocus,
+  onBlockBlur,
   isRecording = false,
 }, ref) => {
-  const [blocks, setBlocks] = useState<Block[]>(() => createBlocksFromContent(initialContent));
+  const [blocks, setBlocks] = useState<Block[]>(() => {
+    // 初始化时优先使用initialBlocks，否则创建空blocks
+    if (initialBlocks && initialBlocks.length > 0) {
+      return initialBlocks;
+    }
+    return createBlocksFromContent('');
+  });
   const asrWritingBlockIdRef = useRef<string | null>(null);
   const isAsrActive = isRecording;
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
@@ -179,7 +190,12 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const isComposingRef = useRef<boolean>(false); // 标记是否正在进行中文输入
 
-  // 确保底部始终有一个空的缓冲块（用于视觉空间）
+  /**
+   * 确保底部始终有一个缓冲块
+   * 缓冲块用于提供视觉空间，使得当前输入的block不会紧贴底部
+   * @param blocks - 当前的blocks数组
+   * @returns 确保有缓冲块的新数组
+   */
   const ensureBottomBufferBlock = useCallback((blocks: Block[]): Block[] => {
     const updated = [...blocks];
     
@@ -197,34 +213,77 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     return updated;
   }, []);
 
+  /**
+   * 初始化blocks
+   * 策略：
+   * 1. 首次渲染时初始化
+   * 2. 当initialBlocks显式更新时重新初始化（如从历史记录恢复、创建新笔记）
+   * 3. 注意：不应该仅因为isAsrActive变化而重置blocks，否则会丢失ASR过程中的内容
+   */
+  const isFirstRenderRef = useRef(true);
+  const prevInitialBlocksRef = useRef<any[] | undefined>(initialBlocks);
+  
   useEffect(() => {
-    if (!isAsrActive) {
+    // 检查是否是首次渲染，或者initialBlocks发生了变化
+    const isFirstRender = isFirstRenderRef.current;
+    const initialBlocksChanged = prevInitialBlocksRef.current !== initialBlocks;
+    
+    // 只在以下情况重新初始化：
+    // 1. 首次渲染
+    // 2. initialBlocks改变（如从历史记录恢复、创建新笔记）
+    if (isFirstRender || initialBlocksChanged) {
+      if (isFirstRender) {
+        isFirstRenderRef.current = false;
+      }
+      
+      // 更新prev引用
+      prevInitialBlocksRef.current = initialBlocks;
+      
       if (initialBlocks && initialBlocks.length > 0) {
         const blocksWithBuffer = ensureBottomBufferBlock(initialBlocks);
         setBlocks(blocksWithBuffer);
       } else {
-        const newBlocks = ensureBottomBufferBlock(createBlocksFromContent(initialContent));
+        const newBlocks = ensureBottomBufferBlock(createBlocksFromContent(''));
         setBlocks(newBlocks);
       }
       asrWritingBlockIdRef.current = null;
     }
-  }, [initialContent, initialBlocks, isAsrActive, ensureBottomBufferBlock]);
+  }, [initialBlocks, ensureBottomBufferBlock]);
 
+  /**
+   * 确保存在一个用于ASR写入的block
+   * 策略：
+   * 1. 寻找最后一个空block（跳过note-info和缓冲块）
+   * 2. 如果找到，标记为ASR写入块
+   * 3. 如果没有，在倒数第二个位置（缓冲块之前）插入新的ASR写入块
+   * @param blocks - 当前的blocks数组
+   * @returns 包含blocks数组、ASR写入块的ID和索引
+   */
   const ensureAsrWritingBlock = useCallback((blocks: Block[]): { blocks: Block[]; blockId: string; index: number } => {
     const updated = [...blocks];
     updated.forEach((b) => b.isAsrWriting = false);
     
-    // 找到最后一个空block（不包括缓冲块）
+    // 找到最后一个空block（不包括note-info和缓冲块）
     let emptyBlockIdx = -1;
     for (let i = updated.length - 1; i >= 0; i--) {
-      if (!updated[i].content || updated[i].content.trim() === '') {
+      const block = updated[i];
+      // 跳过 note-info 和 bufferBlock
+      if (block.type === 'note-info' || block.isBufferBlock) {
+        continue;
+      }
+      // 跳过图片 block（图片 block 的 content 为空，但不应该被当作空 block）
+      if (block.type === 'image') {
+        continue;
+      }
+      // 找到第一个可用的空block（内容为空的普通 block）
+      if (!block.content || block.content.trim() === '') {
         emptyBlockIdx = i;
         break;
       }
     }
     
-    // 如果找到空block且不是最后一个（最后一个是缓冲块），使用它
-    if (emptyBlockIdx >= 0 && emptyBlockIdx < updated.length - 1) {
+    // 如果找到空block，使用它
+    if (emptyBlockIdx >= 0) {
       updated[emptyBlockIdx] = {
         ...updated[emptyBlockIdx],
         isAsrWriting: true,
@@ -258,6 +317,12 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     }
   }, [isAsrActive, ensureAsrWritingBlock, ensureBottomBufferBlock]);
 
+  /**
+   * 追加ASR识别的文本到编辑器
+   * @param newText - ASR识别的文本
+   * @param isDefiniteUtterance - 是否是确定的完整utterance（true时会创建新block）
+   * @param timeInfo - 时间信息（开始和结束时间）
+   */
   const appendAsrText = useCallback(
     (newText: string, isDefiniteUtterance: boolean = false, timeInfo?: { startTime?: number; endTime?: number }) => {
       if (!isAsrActive) return;
@@ -488,7 +553,12 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     });
   };
 
-  // 保存光标位置
+  /**
+   * 保存光标位置
+   * 用于在内容更新后恢复光标位置，避免光标跳动
+   * @param element - contentEditable元素
+   * @returns 光标在文本中的偏移量，如果失败返回null
+   */
   const saveCursorPosition = (element: HTMLElement) => {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return null;
@@ -502,7 +572,11 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     return caretOffset;
   };
 
-  // 恢复光标位置
+  /**
+   * 恢复光标位置
+   * @param element - contentEditable元素
+   * @param offset - 光标在文本中的偏移量
+   */
   const restoreCursorPosition = (element: HTMLElement, offset: number) => {
     const selection = window.getSelection();
     if (!selection) return;
@@ -590,6 +664,232 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     });
   }, [onContentChange, ensureBottomBufferBlock]);
 
+  /**
+   * 检查光标是否在元素的开头
+   * 用于判断是否应该触发退格合并操作
+   * @param element - contentEditable元素
+   * @returns 如果光标在开头返回true
+   */
+  const isCursorAtStart = (element: HTMLElement): boolean => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+
+    const range = selection.getRangeAt(0);
+    
+    // 检查光标是否在元素内部
+    if (!element.contains(range.startContainer) && !element.contains(range.endContainer)) {
+      return false;
+    }
+    
+    // 创建范围从元素开头到光标位置
+    const testRange = document.createRange();
+    try {
+      testRange.setStart(element, 0);
+      testRange.setEnd(range.endContainer, range.endOffset);
+      // 如果从开头到光标位置的文本长度为0，说明光标在开头
+      return testRange.toString().length === 0;
+    } catch (e) {
+      // 如果设置范围失败，使用备用方法
+      const startRange = range.cloneRange();
+      startRange.selectNodeContents(element);
+      startRange.setEnd(range.endContainer, range.endOffset);
+      return startRange.toString().length === 0;
+    }
+  };
+
+  /**
+   * 处理退格键在block开头时的合并操作
+   * 当用户在block开头按退格键时，将当前block与上一个block合并
+   * @param blockId - 当前block的ID
+   * @param element - contentEditable元素
+   * @returns 如果已处理返回true（阻止默认行为），否则返回false
+   */
+  const handleBackspaceAtStart = useCallback((blockId: string, element: HTMLElement) => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+
+    // 检查光标是否在开头
+    if (!isCursorAtStart(element)) {
+      return false; // 光标不在开头，让浏览器默认处理
+    }
+
+    setBlocks((prev) => {
+      const updated = [...prev];
+      const currentBlockIndex = updated.findIndex(b => b.id === blockId);
+      
+      if (currentBlockIndex < 0) return prev;
+      
+      const currentBlock = updated[currentBlockIndex];
+      
+      // 如果当前block是note-info、缓冲块或ASR正在写入的block，不允许合并
+      if (currentBlock.type === 'note-info' || 
+          currentBlock.isBufferBlock || 
+          currentBlock.isAsrWriting) {
+        return prev;
+      }
+      
+      // 找到上一个可合并的block（跳过缓冲块）
+      let prevBlockIndex = currentBlockIndex - 1;
+      while (prevBlockIndex >= 0 && updated[prevBlockIndex].isBufferBlock) {
+        prevBlockIndex--;
+      }
+      
+      // 如果没有上一个block，或者上一个block是note-info，不能合并
+      if (prevBlockIndex < 0 || updated[prevBlockIndex].type === 'note-info') {
+        return prev;
+      }
+      
+      const prevBlock = updated[prevBlockIndex];
+      
+      // 如果上一个block是ASR正在写入的，不能合并
+      if (prevBlock.isAsrWriting) {
+        return prev;
+      }
+      
+      // 合并内容：将当前block的内容追加到上一个block
+      const mergedContent = prevBlock.content + currentBlock.content;
+      
+      // 更新上一个block的内容
+      updated[prevBlockIndex] = {
+        ...prevBlock,
+        content: mergedContent,
+        // 如果当前block或上一个block是小结块，保持小结标记
+        isSummary: prevBlock.isSummary || currentBlock.isSummary,
+      };
+      
+      // 删除当前block
+      updated.splice(currentBlockIndex, 1);
+      
+      const newBlocks = ensureBottomBufferBlock(updated);
+      
+      // 延迟调用 onContentChange 到下一个事件循环
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      // 等待DOM更新后，将光标移动到上一个block的末尾
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const prevBlockElement = blockRefs.current.get(prevBlock.id)?.querySelector('[contenteditable="true"]') as HTMLElement;
+          if (prevBlockElement) {
+            const newSelection = window.getSelection();
+            if (newSelection) {
+              const newRange = document.createRange();
+              newRange.selectNodeContents(prevBlockElement);
+              newRange.collapse(false); // 折叠到末尾
+              newSelection.removeAllRanges();
+              newSelection.addRange(newRange);
+              // 聚焦到上一个block
+              prevBlockElement.focus();
+            }
+          }
+        }, 0);
+      });
+      
+      return newBlocks;
+    });
+    
+    return true; // 已处理，阻止默认行为
+  }, [onContentChange, ensureBottomBufferBlock]);
+
+  /**
+   * 处理回车键：在光标位置截断当前block并插入新block
+   * @param blockId - 当前block的ID
+   * @param element - contentEditable元素
+   */
+  const handleEnterKey = useCallback((blockId: string, element: HTMLElement) => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    
+    // 获取光标位置
+    const preCaretRange = range.cloneRange();
+    preCaretRange.selectNodeContents(element);
+    preCaretRange.setEnd(range.endContainer, range.endOffset);
+    const caretOffset = preCaretRange.toString().length;
+    
+    // 获取当前block的完整文本内容
+    const fullText = element.textContent || '';
+    
+    // 截断：光标前的内容保留在当前block，光标后的内容移到新block
+    const beforeText = fullText.substring(0, caretOffset);
+    const afterText = fullText.substring(caretOffset);
+    
+    setBlocks((prev) => {
+      const updated = [...prev];
+      const currentBlockIndex = updated.findIndex(b => b.id === blockId);
+      
+      if (currentBlockIndex < 0) return prev;
+      
+      const currentBlock = updated[currentBlockIndex];
+      
+      // 如果当前block是note-info、缓冲块或ASR正在写入的block，不允许截断
+      if (currentBlock.type === 'note-info' || 
+          currentBlock.isBufferBlock || 
+          currentBlock.isAsrWriting) {
+        return prev;
+      }
+      
+      // 更新当前block的内容为光标前的内容
+      updated[currentBlockIndex] = {
+        ...currentBlock,
+        content: beforeText,
+      };
+      
+      // 创建新block，包含光标后的内容
+      const newBlock: Block = {
+        id: `block-${Date.now()}-${Math.random()}`,
+        type: currentBlock.type, // 保持相同的block类型
+        content: afterText,
+        isAsrWriting: false,
+        isSummary: currentBlock.isSummary, // 保持小结标记
+      };
+      
+      // 在当前位置之后插入新block（如果后面有缓冲块，则插入在缓冲块之前）
+      const insertIndex = currentBlockIndex + 1;
+      // 检查插入位置是否是缓冲块
+      if (insertIndex < updated.length && updated[insertIndex].isBufferBlock) {
+        // 在缓冲块之前插入
+        updated.splice(insertIndex, 0, newBlock);
+      } else {
+        // 直接插入
+        updated.splice(insertIndex, 0, newBlock);
+      }
+      
+      const newBlocks = ensureBottomBufferBlock(updated);
+      
+      // 延迟调用 onContentChange 到下一个事件循环
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      // 等待DOM更新后，将光标移动到新block的开头
+      // 使用 requestAnimationFrame 确保DOM已更新
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const newBlockElement = blockRefs.current.get(newBlock.id)?.querySelector('[contenteditable="true"]') as HTMLElement;
+          if (newBlockElement) {
+            const newSelection = window.getSelection();
+            if (newSelection) {
+              const newRange = document.createRange();
+              newRange.selectNodeContents(newBlockElement);
+              newRange.collapse(true); // 折叠到开头
+              newSelection.removeAllRanges();
+              newSelection.addRange(newRange);
+              // 聚焦到新block
+              newBlockElement.focus();
+            }
+          }
+        }, 0);
+      });
+      
+      return newBlocks;
+    });
+  }, [onContentChange, ensureBottomBufferBlock]);
+
   // 处理note-info编辑区域外的点击
   // 检测是否有用户正在编辑的block
   const isUserEditing = useCallback(() => {
@@ -607,7 +907,13 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     return false;
   }, [editingBlockId]);
 
-  // 当新block出现或ASR正在写入block时，自动滚动以确保内容完整可见
+  /**
+   * 当新block出现或ASR正在写入block时，自动滚动以确保内容完整可见
+   * 策略：
+   * - 新增block时：将block定位到视口中心偏上，而不是贴底
+   * - 内容更新时：平滑地保持block底部可见，避免换行造成的跳动
+   * - 用户正在编辑时：不自动滚动，避免干扰用户操作
+   */
   useEffect(() => {
     if (!isAsrActive || isUserEditing()) {
       lastBlockCountRef.current = blocks.length;
@@ -631,13 +937,26 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
           // 新增block时，将block定位到视口中心偏上的位置，而不是贴底
           blockElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
-          // 内容更新时，确保block完整可见但不过度滚动
+          // 内容更新时，使用温和的滚动策略，避免换行跳动
           const rect = blockElement.getBoundingClientRect();
-          const viewportHeight = window.innerHeight;
+          const scrollContainer = blockElement.closest('.block-editor');
           
-          // 如果block底部超出视口或顶部不可见，则滚动到中心位置
-          if (rect.bottom > viewportHeight - 100 || rect.top < 100) {
-            blockElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (scrollContainer) {
+            const containerRect = scrollContainer.getBoundingClientRect();
+            const relativeBottom = rect.bottom - containerRect.top;
+            const visibleHeight = containerRect.height;
+            
+            // 只有当block底部即将超出容器时才滚动
+            // 使用更大的阈值（150px）来减少频繁滚动
+            const threshold = 150;
+            if (relativeBottom > visibleHeight - threshold) {
+              // 使用渐进式滚动，只滚动超出的部分，而不是将整个block居中
+              const scrollAmount = relativeBottom - (visibleHeight - threshold);
+              scrollContainer.scrollBy({ 
+                top: scrollAmount, 
+                behavior: 'smooth' 
+              });
+            }
           }
         }
       }
@@ -663,6 +982,101 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [editingBlockId]);
+
+  // 追踪当前聚焦的 block ID
+  const focusedBlockIdRef = useRef<string | null>(null);
+
+  // 处理粘贴图片
+  const handlePasteImage = useCallback(async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    // 检查是否有图片
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.indexOf('image') !== -1) {
+        e.preventDefault(); // 阻止默认的粘贴行为
+        
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        try {
+          // 读取图片为 Base64
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            const base64Data = event.target?.result as string;
+            
+            // 调用后端 API 保存图片
+            const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+            const response = await fetch(`${API_BASE_URL}/api/images/save`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                image_data: base64Data,
+              }),
+            });
+
+            const result = await response.json();
+            
+            if (result.success && result.image_url) {
+              // 创建图片 block
+              const newImageBlock: Block = {
+                id: `block-${Date.now()}-${Math.random()}`,
+                type: 'image',
+                content: '', // 图片块的 content 为空
+                imageUrl: result.image_url,
+              };
+
+              // 在当前光标所在的 block 之后插入图片块
+              setBlocks((prev) => {
+                const updated = [...prev];
+                let insertIndex = updated.length;
+                
+                // 如果有聚焦的 block，在其后面插入
+                const focusedBlockId = focusedBlockIdRef.current;
+                if (focusedBlockId) {
+                  const focusedIndex = updated.findIndex(b => b.id === focusedBlockId);
+                  if (focusedIndex !== -1) {
+                    insertIndex = focusedIndex + 1;
+                  }
+                }
+                
+                // 如果没有找到聚焦的 block，在最后一个非缓冲块之后插入
+                if (insertIndex === updated.length && updated[updated.length - 1]?.isBufferBlock) {
+                  insertIndex = updated.length - 1;
+                }
+                
+                updated.splice(insertIndex, 0, newImageBlock);
+                const result = ensureBottomBufferBlock(updated);
+                
+                // 延迟调用 onContentChange 到下一个事件循环
+                setTimeout(() => {
+                  const content = blocksToContent(result);
+                  onContentChange?.(content, false);
+                }, 0);
+                
+                return result;
+              });
+
+              console.log('[BlockEditor] 图片已插入:', result.image_url);
+            } else {
+              console.error('[BlockEditor] 保存图片失败:', result.message);
+              alert(`保存图片失败: ${result.message}`);
+            }
+          };
+
+          reader.readAsDataURL(file);
+        } catch (error) {
+          console.error('[BlockEditor] 处理图片粘贴失败:', error);
+          alert('处理图片失败，请重试');
+        }
+        
+        return; // 只处理第一张图片
+      }
+    }
+  }, [ensureBottomBufferBlock, onContentChange]);
 
   const renderBlock = (block: Block) => {
     // 缓冲块特殊处理：不显示，只用于占位
@@ -754,6 +1168,57 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       );
     }
 
+    // 图片类型的特殊渲染
+    if (block.type === 'image') {
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+      const imageUrl = block.imageUrl?.startsWith('http') 
+        ? block.imageUrl 
+        : `${API_BASE_URL}/api/${block.imageUrl}`;
+
+      return (
+        <div 
+          key={block.id} 
+          className="block block-image-container"
+          ref={(el) => {
+            if (el) blockRefs.current.set(block.id, el);
+            else blockRefs.current.delete(block.id);
+          }}
+        >
+          <div className="block-handle">
+            <span className="handle-icon">🖼️</span>
+          </div>
+          <div className="block-image-wrapper">
+            <img 
+              src={imageUrl} 
+              alt={block.imageCaption || '图片'} 
+              className="block-image"
+              onError={(e) => {
+                console.error('[BlockEditor] 图片加载失败:', imageUrl);
+                e.currentTarget.style.display = 'none';
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'block-image-error';
+                errorDiv.textContent = '图片加载失败';
+                e.currentTarget.parentElement?.appendChild(errorDiv);
+              }}
+            />
+            {block.imageCaption && (
+              <div className="block-image-caption">{block.imageCaption}</div>
+            )}
+          </div>
+          <button 
+            className="block-delete-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteBlock(block.id);
+            }}
+            title="删除此块"
+          >
+            🗑️
+          </button>
+        </div>
+      );
+    }
+
     // 普通block渲染
     const Tag = getTagName(block.type) as 'p' | 'h1' | 'h2' | 'h3' | 'pre';
     const canEdit = !block.isAsrWriting; // ASR正在写入的block不能编辑
@@ -776,6 +1241,42 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             className={getClassName(block)}
             contentEditable={canEdit}
             suppressContentEditableWarning
+            onFocus={() => {
+              // 记录当前聚焦的 block ID
+              focusedBlockIdRef.current = block.id;
+              // 通知父组件
+              onBlockFocus?.(block.id);
+            }}
+            onBlur={() => {
+              // 清除聚焦状态
+              focusedBlockIdRef.current = null;
+              // 通知父组件
+              onBlockBlur?.(block.id);
+            }}
+            onKeyDown={(e) => {
+              // 如果正在进行中文输入，不处理特殊按键
+              if (isComposingRef.current) {
+                return;
+              }
+              
+              // 处理回车键
+              if (e.key === 'Enter' && !e.shiftKey && canEdit) {
+                e.preventDefault();
+                const element = e.currentTarget;
+                handleEnterKey(block.id, element);
+                return;
+              }
+              
+              // 处理退格键：在光标位于block开头时，与上一个block合并
+              if (e.key === 'Backspace' && canEdit) {
+                const element = e.currentTarget;
+                const handled = handleBackspaceAtStart(block.id, element);
+                if (handled) {
+                  e.preventDefault();
+                }
+                return;
+              }
+            }}
             onCompositionStart={() => {
               // 中文输入开始
               isComposingRef.current = true;
@@ -867,7 +1368,10 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   };
 
   return (
-    <div className="block-editor">
+    <div 
+      className="block-editor"
+      onPaste={handlePasteImage}
+    >
       <div className="block-editor-content">
         {blocks.map(renderBlock)}
       </div>

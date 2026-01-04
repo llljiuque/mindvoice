@@ -46,31 +46,104 @@ audio:
   # - 16kHz单声道：60秒约1.92MB，120秒约3.84MB
   # - 建议值：60秒（1分钟）- 120秒（2分钟）
   
+  # 音频处理（WebRTC Audio Processing Module）
+  audio_processing:
+    enabled: true  # 是否启用音频处理（推荐开启）
+    # 说明：音频处理包括AGC（自动增益控制）和NS（噪声抑制）
+    # 作用：
+    # 1. 标准化音频音量，提升VAD准确性
+    # 2. 过滤背景噪音，提升识别清晰度
+    # 3. 适应不同麦克风和环境
+    
+    enable_agc: true  # 自动增益控制（Automatic Gain Control）
+    # 作用：自动调整音频音量到目标水平
+    # 适用场景：
+    # - 麦克风音量不稳定
+    # - 说话声音时大时小
+    # - 麦克风距离不固定
+    # 效果：提升VAD准确性，改善ASR识别率
+    
+    enable_ns: true  # 噪声抑制（Noise Suppression）
+    # 作用：过滤背景噪音，保留语音信号
+    # 适用场景：
+    # - 有背景噪音的环境（风扇、空调等）
+    # - 键盘打字声
+    # - 远场拾音
+    # 效果：减少背景噪音干扰，提升语音清晰度
+    
+    agc_level: 2  # AGC级别 (0-3，数字越大增益调整越强，推荐2)
+    # 0: 最小增益调整
+    # 1: 轻度调整
+    # 2: 中等调整（推荐，适合大多数场景）
+    # 3: 最大调整（强烈增益，可能引入失真）
+    
+    ns_level: 2  # NS级别 (0-3，数字越大噪声抑制越强，推荐2)
+    # 0: 不抑制噪音
+    # 1: 轻度抑制
+    # 2: 中等抑制（推荐，平衡噪音和语音质量）
+    # 3: 最大抑制（可能影响语音自然度）
+    
+    # 音频处理流程：
+    # 原始音频 → AGC (音量标准化) → NS (噪声过滤) → VAD (语音检测) → ASR (识别)
+    
+    # 性能影响：
+    # - WebRTC APM（原生实现）: CPU占用约1-2%，延迟<10ms
+    # - 简化版（Python实现）: CPU占用约3-5%，延迟<20ms
+    # 注意：如果安装 webrtc-audio-processing 失败，会自动回退到简化版
+
+  
   # VAD配置（语音活动检测，用于过滤静音，节约ASR成本）
   vad:
     enabled: false  # 是否启用VAD（默认关闭，向后兼容）
     library: "webrtcvad"  # VAD库：webrtcvad
-    mode: 2  # WebRTC VAD敏感度：0-3，越高越严格（推荐2）
+    mode: 2  # WebRTC VAD敏感度：0-3，越高越严格（0=最宽松，3=最严格，推荐1-2）
     frame_duration_ms: 20  # VAD检测帧长度：10/20/30ms（推荐20ms）
     
-    # 检测阈值（防止截断）
-    speech_start_threshold: 2       # 连续N个块检测到语音才开始发送（40ms，避免开头截断）
-    speech_end_threshold: 10        # 连续M个块静音才停止发送（200ms，避免中间截断）
-    min_speech_duration_ms: 200     # 最小语音时长（毫秒），过滤短噪音
+    # 检测阈值（控制启停灵敏度和延迟）
+    speech_start_threshold: 2       # 连续N帧检测到语音才启动ASR（建议2-5）
+    # 延迟权衡：
+    # - threshold=2: 启动延迟~40ms，更快响应，可能误触发
+    # - threshold=5: 启动延迟~100ms，更准确，略有延迟感
     
-    # 缓冲机制（防止截断）
-    pre_speech_padding_ms: 100      # 语音开始前缓冲（保留开头，避免"嗯..."被截断）
-    post_speech_padding_ms: 300     # 语音结束后缓冲（保留结尾，避免语气词被截断）
+    speech_end_threshold: 10        # 连续M帧静音才停止ASR（建议8-15）
+    # 说明：值太小会频繁启停，值太大会延长ASR运行时间
+    
+    min_speech_duration_ms: 1000     # 最小语音时长（毫秒），过滤短噪音
+    
+    # 缓冲机制（防止截断，补偿延迟）
+    pre_speech_padding_ms: 100      # 语音开始前缓冲（保留开头100ms）
+    # 重要：即使VAD延迟100ms才启动ASR，前置缓冲保证不丢失开头音节
+    
+    post_speech_padding_ms: 300     # 语音结束后缓冲（保留结尾300ms）
   
-  # VAD说明：
+  # VAD 延迟说明：
+  # 1. 首次语音延迟分析：
+  #    - VAD检测: ~20ms/帧 × 1帧 = 20ms
+  #    - 状态确认: 20ms × speech_start_threshold
+  #    - ASR启动: ~10ms（已连接）或 ~200ms（新连接）
+  #    - 总延迟: threshold=2时约60ms，threshold=5时约130ms
+  # 
+  # 2. 持续语音延迟：
+  #    - VAD处理: <0.1ms（纯内存操作，WebRTC VAD极快）
+  #    - 几乎无感知延迟
+  # 
+  # 3. 前置缓冲补偿：
+  #    - 即使VAD延迟100ms，前置缓冲保证开头不丢失
+  #    - 用户说"你好"，"你"字不会被截断
+  # 
+  # 4. 推荐配置：
+  #    - 成本优先: threshold=5, mode=3 (节约60%，延迟130ms)
+  #    - 体验优先: threshold=2, mode=1 (节约40%，延迟60ms)
+  #    - 零延迟: enabled=false (无节约，无延迟)
+  #
+  # VAD成本节约说明：
   # - 启用VAD可以过滤60-80%的静音音频，预计节约40-60%的ASR成本
-  # - mode参数：0最宽松（可能误检），3最严格（可能漏检），2为平衡值
+  # - mode参数：0最宽松（可能误检），3最严格（可能漏检），1-2为平衡值
   # - 静音时不发送任何数据，最大化成本节约
-  # - 长时间静音（>60秒）可能需要重连，延迟200-500ms（可接受）
   # - 如果发现截断问题，可以调整：
-  #   * 减小 speech_start_threshold（更快开始）
-  #   * 增大 speech_end_threshold（更晚结束）
-  #   * 增大 pre/post_speech_padding_ms（更多缓冲）
+  #   * 减小 speech_start_threshold（更快启动，但可能误触发）
+  #   * 增大 speech_end_threshold（更晚停止，更完整但成本略高）
+  #   * 增大 pre/post_speech_padding_ms（更多缓冲，更安全）
 
 # UI 配置
 ui:

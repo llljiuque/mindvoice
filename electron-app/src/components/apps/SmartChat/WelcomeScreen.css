@@ -1,0 +1,137 @@
+/* 与 VoiceNote WelcomeScreen 保持一致的设计 */
+.smartchat-welcome-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 40px;
+}
+
+.smartchat-welcome-screen .welcome-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+}
+
+.smartchat-welcome-screen .welcome-icon {
+  font-size: 80px;
+  opacity: 0.5;
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.smartchat-welcome-screen .welcome-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.smartchat-welcome-screen .welcome-description {
+  font-size: 16px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  max-width: 400px;
+}
+
+.smartchat-welcome-screen .welcome-features {
+  display: flex;
+  gap: 32px;
+  margin-top: 20px;
+}
+
+.smartchat-welcome-screen .feature-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.smartchat-welcome-screen .feature-icon {
+  font-size: 32px;
+}
+
+.smartchat-welcome-screen .feature-text {
+  font-size: 14px;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+
+.smartchat-welcome-screen .welcome-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.smartchat-welcome-screen .start-btn {
+  min-width: 180px;
+  border-radius: var(--radius-full) !important;
+}
+
+.smartchat-welcome-screen .footer-hint {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+  text-align: center;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .smartchat-welcome-screen {
+    padding: 30px 20px;
+  }
+
+  .smartchat-welcome-screen .welcome-icon {
+    font-size: 60px;
+  }
+  
+  .smartchat-welcome-screen .welcome-title {
+    font-size: 20px;
+  }
+
+  .smartchat-welcome-screen .welcome-description {
+    font-size: 14px;
+  }
+  
+  .smartchat-welcome-screen .welcome-features {
+    gap: 24px;
+  }
+  
+  .smartchat-welcome-screen .feature-icon {
+    font-size: 28px;
+  }
+  
+  .smartchat-welcome-screen .feature-text {
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 600px) {
+  .smartchat-welcome-screen .start-btn {
+    width: 100%;
+  }
+
+  .smartchat-welcome-screen .welcome-features {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    width: 100%;
+    max-width: 300px;
+  }
+}
+

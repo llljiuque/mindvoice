@@ -14,5 +14,12 @@ websockets>=12.0
 # LLM 依赖
 litellm>=1.0.0
 
-# VAD 依赖
+# 知识库依赖（SmartChat RAG）
+sentence-transformers>=2.2.2
+chromadb>=0.4.22
+
+# VAD 和音频处理依赖
 webrtcvad>=2.0.10
+# WebRTC 完整音频处理模块（AGC + NS + AEC）
+# 注意：需要编译环境，如果安装失败会自动回退到简化版实现
+webrtc-audio-processing>=1.0.0; platform_system != 'Windows'

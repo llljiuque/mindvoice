@@ -1,10 +1,11 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { BlockEditor, NoteInfo } from './BlockEditor';
-import { FormatToolbar } from './FormatToolbar';
 import { WelcomeScreen } from './WelcomeScreen';
+import { BottomToolbar } from './BottomToolbar';
 import { AppLayout } from '../../shared/AppLayout';
-import { StatusIndicator, AppStatusType } from '../../shared/StatusIndicator';
+import { StatusIndicator } from '../../shared/StatusIndicator';
 import { AppButton, ButtonGroup } from '../../shared/AppButton';
+import { LanguageSelector, LanguageType } from '../../shared/LanguageSelector';
 import { SystemErrorInfo } from '../../../utils/errorCodes';
 import './VoiceNote.css';
 
@@ -21,11 +22,9 @@ interface BlockEditorHandle {
 }
 
 interface VoiceNoteProps {
-  text: string;
-  onTextChange: (text: string) => void;
   // ASR状态
   asrState: 'idle' | 'recording' | 'stopping';
-  // ASR控制
+  // ASR控制（只发送启停信号）
   onAsrStart?: () => void; // 启动ASR
   onAsrStop?: () => void; // 停止ASR
   // 保存当前内容到历史记录（仅在idle状态时可用）
@@ -40,11 +39,14 @@ interface VoiceNoteProps {
   onStartWork: () => void;
   onEndWork: () => void;
   initialBlocks?: any[];
+  // 数据库保存回调
+  onBlockFocus?: (blockId: string) => void;
+  onBlockBlur?: (blockId: string) => void;
+  onContentChange?: (content: string, isDefiniteUtterance?: boolean) => void;
+  onNoteInfoChange?: (noteInfo: NoteInfo) => void;
 }
 
 export const VoiceNote: React.FC<VoiceNoteProps> = ({
-  text,
-  onTextChange,
   asrState,
   onAsrStart,
   onAsrStop,
@@ -57,108 +59,59 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   onStartWork,
   onEndWork,
   initialBlocks,
+  onBlockFocus,
+  onBlockBlur,
+  onContentChange,
+  onNoteInfoChange,
 }) => {
-  const [showToolbar, setShowToolbar] = useState(false);
-  const [toolbarPosition, setToolbarPosition] = useState({ top: 0, left: 0 });
   const [isSummarizing, setIsSummarizing] = useState(false);
-  const voiceNoteContentRef = useRef<HTMLDivElement>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<LanguageType>('original');
   
   // 判断是否显示欢迎界面：只要工作会话未激活，就显示欢迎界面
   const showWelcome = !isWorkSessionActive;
+  
+  // 检查是否有内容（从blockEditorRef获取）
+  const hasContent = () => {
+    if (!blockEditorRef?.current) return false;
+    const blocks = blockEditorRef.current.getBlocks();
+    return blocks.some((b: any) => 
+      b.type !== 'note-info' && 
+      !b.isBufferBlock && 
+      b.content.trim()
+    );
+  };
 
-  // 监听文本选择，显示格式化工具栏
-  useEffect(() => {
-    const handleSelectionChange = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        setShowToolbar(false);
-        return;
-      }
-
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      
-      if (voiceNoteContentRef.current) {
-        const contentRect = voiceNoteContentRef.current.getBoundingClientRect();
-        setToolbarPosition({
-          top: rect.top - contentRect.top - 40,
-          left: rect.left - contentRect.left + rect.width / 2,
-        });
-        setShowToolbar(true);
-      }
-    };
-
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange);
-    };
-  }, []);
-
-  // 点击其他地方时隐藏工具栏
-  useEffect(() => {
-    const handleClick = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) {
-        setShowToolbar(false);
-      }
-    };
-
-    document.addEventListener('click', handleClick);
-    return () => {
-      document.removeEventListener('click', handleClick);
-    };
-  }, []);
-
-  const handleFormat = useCallback((format: string) => {
-    console.log('格式化:', format);
-    setShowToolbar(false);
-  }, []);
 
   // 处理开始工作按钮
   const handleStartWork = () => {
     onStartWork();
   };
 
-  // 当用户开始输入时，自动开始工作会话
-  const handleTextChange = (newText: string) => {
-    if (!isWorkSessionActive && newText.trim().length > 0) {
+  // BlockEditor内容变化处理（用于自动启动工作会话和触发数据库保存）
+  const handleContentChange = useCallback((_content: string, _isDefiniteUtterance?: boolean) => {
+    // 当用户开始输入或ASR开始识别时，自动开始工作会话
+    if (!isWorkSessionActive && hasContent()) {
       onStartWork();
     }
-    onTextChange(newText);
-  };
+    
+    // 触发父组件的保存逻辑
+    onContentChange?.(_content, _isDefiniteUtterance);
+  }, [isWorkSessionActive, hasContent, onStartWork, onContentChange]);
   
-  // 处理笔记信息变化
-  const handleNoteInfoChange = useCallback((_info: NoteInfo) => {
-    // 笔记信息变化时的处理（如果需要可以在这里添加逻辑）
-  }, []);
-  
-  // 处理保存（添加结束时间）
-  const handleSave = () => {
-    if (blockEditorRef?.current) {
-      // 设置结束时间并获取返回的 endTime
-      const endTime = blockEditorRef.current.setNoteInfoEndTime();
-      // 获取笔记信息并手动设置 endTime（避免状态更新延迟）
-      const currentNoteInfo = blockEditorRef.current.getNoteInfo();
-      if (currentNoteInfo) {
-        currentNoteInfo.endTime = endTime;
-      }
-      onSaveText(currentNoteInfo);
-    } else {
-      onSaveText();
-    }
-  };
-
-  // 处理生成小结
+  /**
+   * 生成小结
+   * 流程：
+   * 1. 收集所有内容blocks（排除note-info和已有的小结）
+   * 2. 构建包含笔记信息和内容的完整消息
+   * 3. 调用 SummaryAgent API 进行流式生成
+   * 4. 实时更新小结block的内容
+   * 5. 生成完成后固化小结
+   */
   const handleSummary = async () => {
     if (!blockEditorRef?.current || isSummarizing) {
-      console.log('[VoiceNote] 小结按钮被点击，但条件不满足:', { 
-        hasBlockEditorRef: !!blockEditorRef?.current,
-        isSummarizing 
-      });
       return;
     }
     
-    console.log('[VoiceNote] 开始生成小结...');
     setIsSummarizing(true);
     
     try {
@@ -268,12 +221,10 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
         alert(`生成小结失败: ${errorInfo.user_message || errorInfo.message}\n${errorInfo.suggestion || ''}`);
         blockEditorRef.current.removeSummaryBlock();
       } else if (!summaryContent) {
-        console.warn('[VoiceNote] 生成小结失败：未收到有效内容');
         alert('生成小结失败：未收到有效内容');
         // 移除空的小结block
         blockEditorRef.current.removeSummaryBlock();
       } else {
-        console.log('[VoiceNote] 小结生成完成，内容长度:', summaryContent.length);
         // 生成完成，更新外部内容（保存到历史记录）
         blockEditorRef.current.finalizeSummaryBlock();
       }
@@ -286,17 +237,14 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
         blockEditorRef.current.removeSummaryBlock();
       }
     } finally {
-      console.log('[VoiceNote] 小结流程结束，重置isSummarizing状态');
       setIsSummarizing(false);
     }
   };
 
-  // 计算 App 状态
-  const getAppStatus = (): AppStatusType => {
-    if (!apiConnected) return 'error';
-    if (asrState === 'stopping') return 'waiting';
-    if (isWorkSessionActive) return 'working';
-    return 'idle';
+  // 处理语言切换
+  const handleLanguageChange = (language: LanguageType) => {
+    setSelectedLanguage(language);
+    // TODO: 实现翻译功能
   };
 
   return (
@@ -306,126 +254,43 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
       icon="📝"
       statusIndicator={
         <StatusIndicator 
-          status={asrState}
-          appStatus={getAppStatus()}
-          appStatusText={
-            !apiConnected ? 'API未连接' :
-            isWorkSessionActive ? '记录中' :
-            '空闲'
-          }
           asrStatus={asrState}
+          status={asrState}
         />
       }
       actions={
         <>
-          {/* ASR控制按钮：根据状态切换 */}
-          {apiConnected && isWorkSessionActive && (
-            <>
-              {asrState === 'idle' && onAsrStart && (
-                <AppButton
-                  onClick={onAsrStart}
-                  variant="success"
-                  size="large"
-                  icon="🎤"
-                  title="启动语音识别"
-                  ariaLabel="启动ASR"
-                >
-                  启动ASR
-                </AppButton>
-              )}
-
-              {asrState === 'recording' && onAsrStop && (
-                <AppButton
-                  onClick={onAsrStop}
-                  variant="danger"
-                  size="medium"
-                  icon="⏹"
-                  title="停止语音识别"
-                  ariaLabel="停止ASR"
-                >
-                  停止
-                </AppButton>
-              )}
-
-              {asrState === 'stopping' && (
-                <AppButton
-                  disabled
-                  variant="warning"
-                  size="medium"
-                  icon="⏳"
-                  title="正在停止语音识别..."
-                  ariaLabel="正在停止"
-                >
-                  停止中
-                </AppButton>
-              )}
-            </>
-          )}
-
-          {/* 保存和工具按钮 */}
           {isWorkSessionActive && (
             <>
+              <LanguageSelector
+                value={selectedLanguage}
+                onChange={handleLanguageChange}
+                disabled={!hasContent()}
+              />
+
               <AppButton
-                onClick={handleSave}
-                disabled={asrState !== 'idle' || !text || !text.trim()}
-                variant="info"
+                onClick={onCreateNewNote}
+                disabled={asrState !== 'idle'}
+                variant="ghost"
                 size="medium"
-                icon="💾"
-                title="保存到历史记录"
-                ariaLabel="保存文本"
+                icon="📝"
+                title={hasContent() ? "保存当前笔记并创建新笔记" : "创建新笔记"}
+                ariaLabel="新笔记"
               >
-                保存
+                NEW
               </AppButton>
 
               <AppButton
-                onClick={handleSummary}
-                disabled={asrState !== 'idle' || !text || !text.trim() || isSummarizing}
-                variant="success"
+                onClick={onEndWork}
+                disabled={asrState !== 'idle'}
+                variant="ghost"
                 size="medium"
-                icon={isSummarizing ? "⏳" : "📊"}
-                title="使用AI生成内容小结"
-                ariaLabel="生成小结"
+                icon="🚪"
+                title="退出当前笔记会话"
+                ariaLabel="退出"
               >
-                {isSummarizing ? '生成中' : '小结'}
+                EXIT
               </AppButton>
-
-              <ButtonGroup>
-                {onCreateNewNote && (
-                  <AppButton
-                    onClick={onCreateNewNote}
-                    disabled={asrState !== 'idle'}
-                    variant="ghost"
-                    size="medium"
-                    icon="📝"
-                    title={text && text.trim() ? "保存当前笔记并创建新笔记" : "创建新笔记"}
-                    ariaLabel="新笔记"
-                  >
-                    新笔记
-                  </AppButton>
-                )}
-                <AppButton
-                  onClick={onCopyText}
-                  disabled={!text}
-                  variant="ghost"
-                  size="medium"
-                  icon="📋"
-                  title="复制文本到剪贴板"
-                  ariaLabel="复制文本"
-                >
-                  复制
-                </AppButton>
-                <AppButton
-                  onClick={onEndWork}
-                  disabled={asrState !== 'idle'}
-                  variant="ghost"
-                  size="medium"
-                  icon="🚪"
-                  title="退出当前笔记会话"
-                  ariaLabel="退出"
-                >
-                  退出
-                </AppButton>
-              </ButtonGroup>
             </>
           )}
         </>
@@ -434,20 +299,26 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
       {showWelcome ? (
         <WelcomeScreen onStartWork={handleStartWork} />
       ) : (
-        <div className="voice-note-content" ref={voiceNoteContentRef}>
-          <FormatToolbar
-            visible={showToolbar}
-            position={toolbarPosition}
-            onFormat={handleFormat}
-          />
-          
+        <div className="voice-note-content">
           <BlockEditor
-            initialContent={text}
             initialBlocks={initialBlocks}
-            onContentChange={handleTextChange}
-            onNoteInfoChange={handleNoteInfoChange}
+            onContentChange={handleContentChange}
+            onNoteInfoChange={onNoteInfoChange}
+            onBlockFocus={onBlockFocus}
+            onBlockBlur={onBlockBlur}
             isRecording={asrState === 'recording'}
             ref={blockEditorRef}
+          />
+          
+          <BottomToolbar
+            asrState={asrState}
+            onAsrStart={onAsrStart}
+            onAsrStop={onAsrStop}
+            onCopy={onCopyText}
+            hasContent={hasContent()}
+            onSummary={handleSummary}
+            isSummarizing={isSummarizing}
+            apiConnected={apiConnected}
           />
         </div>
       )}

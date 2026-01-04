@@ -41,28 +41,20 @@ export const StatusIndicator: React.FC<StatusIndicatorProps> = ({
   asrStatus,
   asrStatusText,
 }) => {
-  // 如果提供了 appStatus 和 asrStatus，则显示双状态
-  if (appStatus !== undefined && asrStatus !== undefined) {
-    const appConfig = appStatusConfig[appStatus];
+  // 如果提供了 asrStatus，优先显示 ASR 状态（简化版，不显示 appStatus）
+  if (asrStatus !== undefined) {
     const asrConfig = statusConfig[asrStatus];
-    const displayAppText = appStatusText || appConfig.text;
     const displayAsrText = asrStatusText || asrConfig.text;
     
-    // 使用 ASR 状态来决定指示点的颜色和动画
     return (
       <div
-        className="status-indicator dual-status"
+        className="status-indicator"
         data-status={asrStatus}
-        data-app-status={appStatus}
         role="status"
         aria-live="polite"
       >
         {showDot && <span className="status-dot" aria-hidden="true"></span>}
-        <span className="status-text">
-          <span className="app-status-part">{displayAppText}</span>
-          <span className="status-separator">|</span>
-          <span className="asr-status-part">{displayAsrText}</span>
-        </span>
+        <span className="status-text">{displayAsrText}</span>
       </div>
     );
   }

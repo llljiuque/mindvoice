@@ -20,7 +20,8 @@ class SQLiteStorageProvider(BaseStorageProvider):
         super().initialize(config)
         
         db_path = config.get('path', 'history.db')
-        self.db_path = Path(db_path)
+        # 展开用户目录路径（~）
+        self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # 创建表
@@ -29,6 +30,9 @@ class SQLiteStorageProvider(BaseStorageProvider):
     
     def _create_table(self):
         """创建数据表"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
         cursor.execute('''
@@ -40,12 +44,17 @@ class SQLiteStorageProvider(BaseStorageProvider):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        logger.info(f"[Storage] 数据表初始化完成: {self.db_path}")
         
         # 检查是否需要迁移：为旧记录添加app_type字段
         cursor.execute("PRAGMA table_info(records)")
         columns = [col[1] for col in cursor.fetchall()]
         if 'app_type' not in columns:
+            logger.info("[Storage] 检测到旧表结构，开始迁移：添加 app_type 字段")
             cursor.execute('ALTER TABLE records ADD COLUMN app_type TEXT DEFAULT "voice-note"')
+            logger.info("[Storage] 数据库迁移完成：app_type 字段已添加")
+        else:
+            logger.info("[Storage] 表结构检查完成，app_type 字段已存在")
         
         conn.commit()
         conn.close()
@@ -62,12 +71,15 @@ class SQLiteStorageProvider(BaseStorageProvider):
         # 从metadata中提取app_type，默认为'voice-note'
         app_type = metadata.get('app_type', 'voice-note')
         
+        # 使用本地时间而非UTC时间
+        created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO records (id, text, metadata, app_type)
-            VALUES (?, ?, ?, ?)
-        ''', (record_id, text, json.dumps(metadata, ensure_ascii=False), app_type))
+            INSERT INTO records (id, text, metadata, app_type, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (record_id, text, json.dumps(metadata, ensure_ascii=False), app_type, created_at))
         conn.commit()
         conn.close()
         
