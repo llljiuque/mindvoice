@@ -72,6 +72,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
 }) => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageType>('original');
+  const [isTranslating, setIsTranslating] = useState(false); // 新增：翻译状态
   
   // 判断是否显示欢迎界面：工作会话未激活 且 没有正在进行的任务
   const showWelcome = !isWorkSessionActive && currentWorkingRecordId === null;
@@ -247,10 +248,200 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
     }
   };
 
+  /**
+   * 导出为 Markdown（图片使用 API URL）
+   */
+  const handleExport = useCallback(async () => {
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+    
+    try {
+      if (!currentWorkingRecordId) {
+        alert('请先保存笔记后再导出');
+        return;
+      }
+      
+      const response = await fetch(
+        `${API_BASE_URL}/api/records/${currentWorkingRecordId}/export?format=md`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`导出失败: ${response.statusText}`);
+      }
+      
+      // 下载文件
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      // 从响应头获取文件名，如果没有则使用默认名称
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `笔记_${new Date().getTime()}.md`;
+      if (contentDisposition) {
+        const matches = /filename\*=UTF-8''([^;]+)/.exec(contentDisposition);
+        if (matches && matches[1]) {
+          filename = decodeURIComponent(matches[1]);
+        }
+      }
+      
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      
+      console.log('[VoiceNote] Markdown 导出成功:', filename);
+    } catch (error) {
+      console.error('[VoiceNote] 导出失败:', error);
+      alert(`导出失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, [currentWorkingRecordId]);
+
+  /**
+   * 打包导出（包含图片的 ZIP）
+   */
+  const handleExportZip = useCallback(async () => {
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+    
+    try {
+      if (!currentWorkingRecordId) {
+        alert('请先保存笔记后再导出');
+        return;
+      }
+      
+      const response = await fetch(
+        `${API_BASE_URL}/api/records/${currentWorkingRecordId}/export?format=zip`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`打包导出失败: ${response.statusText}`);
+      }
+      
+      // 下载文件
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      // 从响应头获取文件名
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `笔记_${new Date().getTime()}.zip`;
+      if (contentDisposition) {
+        const matches = /filename\*=UTF-8''([^;]+)/.exec(contentDisposition);
+        if (matches && matches[1]) {
+          filename = decodeURIComponent(matches[1]);
+        }
+      }
+      
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      
+      console.log('[VoiceNote] ZIP 打包导出成功:', filename);
+    } catch (error) {
+      console.error('[VoiceNote] 打包导出失败:', error);
+      alert(`打包导出失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, [currentWorkingRecordId]);
+
+
   // 处理语言切换
-  const handleLanguageChange = (language: LanguageType) => {
+  const handleLanguageChange = async (language: LanguageType) => {
     setSelectedLanguage(language);
-    // TODO: 实现翻译功能
+    
+    if (language === 'original') {
+      // 切换回原文，不需要翻译
+      return;
+    }
+    
+    const languagePair = parseLanguagePair(language);
+    if (!languagePair) return;
+    
+    // 检查是否已有翻译
+    const blocks = blockEditorRef?.current?.getBlocks() || [];
+    const translationKey = language;
+    const hasTranslations = blocks.some((b: any) => b.translations?.[translationKey]);
+    
+    if (!hasTranslations) {
+      // 没有翻译，触发批量翻译
+      await translateAllBlocks(languagePair);
+    }
+  };
+
+  // 解析语言对
+  const parseLanguagePair = (languageType: LanguageType): { source: string; target: string } | null => {
+    if (languageType === 'original') return null;
+    const [source, target] = languageType.split('-');
+    return { source, target };
+  };
+
+  // 批量翻译所有Block
+  const translateAllBlocks = async (languagePair: { source: string; target: string }) => {
+    if (!blockEditorRef?.current) return;
+    
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+    const blocks = blockEditorRef.current.getBlocks();
+    const contentBlocks = blocks.filter((b: any) => 
+      b.type !== 'note-info' && 
+      !b.isBufferBlock && 
+      !b.isSummary &&
+      b.content.trim()
+    );
+    
+    if (contentBlocks.length === 0) return;
+    
+    setIsTranslating(true);
+    
+    try {
+      const texts = contentBlocks.map((b: any) => b.content);
+      
+      const response = await fetch(`${API_BASE_URL}/api/translate/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          texts,
+          source_lang: languagePair.source,
+          target_lang: languagePair.target
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`翻译失败: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // 更新blocks的translations字段
+        const translationKey = `${languagePair.source}-${languagePair.target}`;
+        const updatedBlocks = blocks.map((b: any) => {
+          const index = contentBlocks.findIndex((cb: any) => cb.id === b.id);
+          if (index !== -1 && data.translations[index]) {
+            return {
+              ...b,
+              translations: {
+                ...b.translations,
+                [translationKey]: {
+                  content: data.translations[index],
+                  updatedAt: Date.now()
+                }
+              }
+            };
+          }
+          return b;
+        });
+        
+        blockEditorRef.current.setBlocks(updatedBlocks);
+        console.log('[VoiceNote] 批量翻译完成');
+      }
+    } catch (error) {
+      console.error('[VoiceNote] 批量翻译失败:', error);
+      alert('翻译失败，请重试');
+    } finally {
+      setIsTranslating(false);
+    }
   };
 
   return (
@@ -272,6 +463,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
                 value={selectedLanguage}
                 onChange={handleLanguageChange}
                 disabled={!hasContent()}
+                loading={isTranslating}
               />
 
               <AppButton
@@ -315,6 +507,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
             onBlocksChange={onBlocksChange}
             onBlockConfirmed={onBlockConfirmed}
             isRecording={asrState === 'recording'}
+            selectedLanguage={selectedLanguage}
             ref={blockEditorRef}
           />
           
@@ -327,6 +520,8 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
             onSummary={handleSummary}
             isSummarizing={isSummarizing}
             apiConnected={apiConnected}
+            onExport={handleExportZip}
+            currentWorkingRecordId={currentWorkingRecordId}
           />
         </div>
       )}

@@ -30,6 +30,9 @@ interface BottomToolbarProps {
   isSummarizing?: boolean;
   // 连接状态
   apiConnected: boolean;
+  // 导出功能
+  onExport?: () => void;
+  currentWorkingRecordId?: string | null;
 }
 
 export const BottomToolbar: React.FC<BottomToolbarProps> = ({
@@ -41,6 +44,8 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
   onSummary,
   isSummarizing = false,
   apiConnected,
+  onExport,
+  currentWorkingRecordId,
 }) => {
   return (
     <div className="bottom-toolbar">
@@ -109,6 +114,18 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
             ariaLabel={isSummarizing ? "正在生成小结" : "生成小结"}
           >
             {isSummarizing ? '生成中' : '小结'}
+          </AppButton>
+
+          <AppButton
+            onClick={onExport}
+            disabled={!currentWorkingRecordId || asrState !== 'idle'}
+            variant="primary"
+            size="medium"
+            icon="📦"
+            title="打包导出（包含图片的 ZIP 文件）"
+            ariaLabel="打包导出"
+          >
+            导出
           </AppButton>
         </div>
       </div>

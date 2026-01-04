@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './LanguageSelector.css';
 
-export type LanguageType = 'original' | 'en' | 'ja' | 'ko';
+export type LanguageType = 'original' | 'zh-en' | 'zh-ja' | 'zh-ko' | 'en-zh' | 'ja-zh' | 'ko-zh';
 
 interface LanguageOption {
   value: LanguageType;
@@ -11,9 +11,12 @@ interface LanguageOption {
 
 const LANGUAGE_OPTIONS: LanguageOption[] = [
   { value: 'original', label: '原文', icon: '📄' },
-  { value: 'en', label: '英文', icon: '🇬🇧' },
-  { value: 'ja', label: '日文', icon: '🇯🇵' },
-  { value: 'ko', label: '韩文', icon: '🇰🇷' },
+  { value: 'zh-en', label: '中文→英文', icon: '🇨🇳→🇬🇧' },
+  { value: 'zh-ja', label: '中文→日文', icon: '🇨🇳→🇯🇵' },
+  { value: 'zh-ko', label: '中文→韩文', icon: '🇨🇳→🇰🇷' },
+  { value: 'en-zh', label: '英文→中文', icon: '🇬🇧→🇨🇳' },
+  { value: 'ja-zh', label: '日文→中文', icon: '🇯🇵→🇨🇳' },
+  { value: 'ko-zh', label: '韩文→中文', icon: '🇰🇷→🇨🇳' },
 ];
 
 interface LanguageSelectorProps {

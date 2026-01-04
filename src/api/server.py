@@ -9,11 +9,12 @@ import os
 import json
 import base64
 import uuid
+from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -29,8 +30,10 @@ from src.core.error_codes import SystemError, SystemErrorInfo
 from src.services.voice_service import VoiceService
 from src.services.llm_service import LLMService
 from src.services.knowledge_service import KnowledgeService
+from src.services.export_service import MarkdownExportService
 from src.utils.audio_recorder import SoundDeviceRecorder
 from src.agents import SummaryAgent, SmartChatAgent
+from src.agents.translation_agent import TranslationAgent
 
 logger = get_logger("API")
 
@@ -93,6 +96,7 @@ llm_service: Optional[LLMService] = None
 knowledge_service: Optional[KnowledgeService] = None
 summary_agent: Optional[SummaryAgent] = None
 smart_chat_agent: Optional[SmartChatAgent] = None
+translation_agent: Optional[TranslationAgent] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
 
@@ -174,6 +178,21 @@ class SimpleChatRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0, le=2, description="温度参数")
     max_tokens: Optional[int] = Field(default=None, description="最大生成token数")
     stream: bool = Field(default=False, description="是否使用流式输出")
+
+
+class TranslateRequest(BaseModel):
+    """翻译请求模型"""
+    text: str = Field(..., description="待翻译文本")
+    source_lang: str = Field(..., description="源语言代码（zh/en/ja/ko）")
+    target_lang: str = Field(..., description="目标语言代码（zh/en/ja/ko）")
+    stream: bool = Field(default=False, description="是否使用流式输出")
+
+
+class BatchTranslateRequest(BaseModel):
+    """批量翻译请求模型"""
+    texts: list[str] = Field(..., description="待翻译文本列表")
+    source_lang: str = Field(..., description="源语言代码（zh/en/ja/ko）")
+    target_lang: str = Field(..., description="目标语言代码（zh/en/ja/ko）")
 
 
 class LLMInfoResponse(BaseModel):
@@ -363,10 +382,15 @@ def setup_llm_service():
                 knowledge_service=knowledge_service
             )
             logger.info(f"[API] {smart_chat_agent.name} 初始化完成")
+            
+            # 初始化 TranslationAgent
+            translation_agent = TranslationAgent(llm_service)
+            logger.info(f"[API] {translation_agent.name} 初始化完成")
         else:
             logger.warning("[API] LLM 服务不可用，请检查配置")
             summary_agent = None
             smart_chat_agent = None
+            translation_agent = None
             knowledge_service = None
             
     except Exception as e:
@@ -374,6 +398,7 @@ def setup_llm_service():
         llm_service = None
         summary_agent = None
         smart_chat_agent = None
+        translation_agent = None
         knowledge_service = None
 
 
@@ -936,6 +961,94 @@ async def get_record(record_id: str):
     except Exception as e:
         logger.error(f"获取记录失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/records/{record_id}/export")
+async def export_record_markdown(record_id: str, format: str = 'md'):
+    """
+    导出记录为文件
+    
+    Args:
+        record_id: 记录 ID
+        format: 导出格式，'md' 或 'zip'
+        
+    Returns:
+        Markdown 文件流或 ZIP 文件流
+    """
+    if not voice_service or not voice_service.storage_provider:
+        raise HTTPException(status_code=503, detail="存储服务未初始化")
+    
+    try:
+        # 获取记录
+        record = voice_service.storage_provider.get_record(record_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        
+        # 生成时间戳和标题
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        metadata = record.get('metadata', {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+        
+        title = "笔记"
+        blocks = metadata.get('blocks', [])
+        note_info_block = next((b for b in blocks if b.get('type') == 'note-info'), None)
+        if note_info_block and note_info_block.get('noteInfo', {}).get('title'):
+            title = note_info_block['noteInfo']['title']
+            import re
+            title = re.sub(r'[<>:"/\\|?*]', '', title).strip()
+            if not title:
+                title = "笔记"
+        
+        if format == 'zip':
+            # ZIP 打包导出（包含图片）
+            from src.core.config import Config
+            config = Config()
+            # 获取数据目录
+            data_dir_str = config.get('storage.data_dir', '~/Library/Application Support/MindVoice')
+            data_dir = Path(data_dir_str).expanduser()
+            
+            zip_content = MarkdownExportService.export_record_to_zip(record, data_dir)
+            filename = f"{title}_{timestamp}.zip"
+            
+            logger.info(f"[Export] 打包导出记录 {record_id} 为 ZIP: {filename}")
+            
+            from urllib.parse import quote
+            encoded_filename = quote(filename.encode('utf-8'))
+            
+            return Response(
+                content=zip_content,
+                media_type='application/zip',
+                headers={
+                    'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"
+                }
+            )
+        else:
+            # Markdown 导出（图片使用 API URL）
+            markdown_content = MarkdownExportService.export_record_to_markdown(record)
+            filename = f"{title}_{timestamp}.md"
+            
+            logger.info(f"[Export] 导出记录 {record_id} 为 Markdown: {filename}")
+            
+            from urllib.parse import quote
+            encoded_filename = quote(filename.encode('utf-8'))
+            
+            return Response(
+                content=markdown_content.encode('utf-8'),
+                media_type='text/markdown; charset=utf-8',
+                headers={
+                    'Content-Disposition': f"attachment; filename*=UTF-8''{encoded_filename}"
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Export] 导出失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
 
 
 @app.delete("/api/records/{record_id}")
@@ -1692,6 +1805,118 @@ async def generate_summary(request: SimpleChatRequest):
         
         logger.error(f"生成小结失败: {e}", exc_info=True)
         return ChatResponse(success=False, error=error_info.to_dict())
+
+
+# ==================== 翻译 API ====================
+
+@app.post("/api/translate")
+async def translate_text(request: TranslateRequest):
+    """
+    翻译单条文本
+    
+    支持流式和非流式输出
+    """
+    if not translation_agent or not translation_agent.is_available():
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="翻译服务不可用",
+            technical_info="translation_agent is None or not available"
+        )
+        return ChatResponse(success=False, error=error_info.to_dict())
+    
+    try:
+        if request.stream:
+            # 流式翻译
+            async def generate():
+                try:
+                    result = await translation_agent.translate(
+                        text=request.text,
+                        source_lang=request.source_lang,
+                        target_lang=request.target_lang,
+                        stream=True
+                    )
+                    
+                    async for chunk in result:
+                        yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+                    
+                    yield "data: [DONE]\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"[API] 流式翻译失败: {e}")
+                    error_info = SystemErrorInfo(
+                        SystemError.LLM_ERROR,
+                        details=f"流式翻译失败: {str(e)}",
+                        technical_info=f"{type(e).__name__}: {str(e)}"
+                    )
+                    yield f"data: {json.dumps({'error': error_info.to_dict()}, ensure_ascii=False)}\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+        else:
+            # 非流式翻译
+            result = await translation_agent.translate(
+                text=request.text,
+                source_lang=request.source_lang,
+                target_lang=request.target_lang,
+                stream=False
+            )
+            
+            return {
+                "success": True,
+                "translation": result
+            }
+    
+    except Exception as e:
+        logger.error(f"[API] 翻译失败: {e}")
+        error_info = SystemErrorInfo(
+            SystemError.LLM_ERROR,
+            details=f"翻译失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=error_info.to_dict())
+
+
+@app.post("/api/translate/batch")
+async def batch_translate(request: BatchTranslateRequest):
+    """
+    批量翻译多条文本
+    
+    用于语言切换时一次性翻译所有block
+    """
+    if not translation_agent or not translation_agent.is_available():
+        error_info = SystemErrorInfo(
+            SystemError.LLM_SERVICE_UNAVAILABLE,
+            details="翻译服务不可用",
+            technical_info="translation_agent is None or not available"
+        )
+        return {"success": False, "error": error_info.to_dict()}
+    
+    try:
+        results = await translation_agent.batch_translate(
+            texts=request.texts,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang
+        )
+        
+        return {
+            "success": True,
+            "translations": results
+        }
+    
+    except Exception as e:
+        logger.error(f"[API] 批量翻译失败: {e}")
+        error_info = SystemErrorInfo(
+            SystemError.LLM_ERROR,
+            details=f"批量翻译失败: {str(e)}",
+            technical_info=f"{type(e).__name__}: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=error_info.to_dict())
 
 
 # ==================== SmartChat API ====================

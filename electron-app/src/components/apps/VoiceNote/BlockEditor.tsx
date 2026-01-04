@@ -26,6 +26,14 @@ export interface Block {
   isBufferBlock?: boolean; // 标识底部缓冲块
   imageUrl?: string; // 图片 URL（相对路径或绝对路径）
   imageCaption?: string; // 图片说明文字
+  // 翻译相关字段
+  translations?: {
+    [key: string]: {
+      content: string;
+      updatedAt: number;
+    };
+  };
+  isTranslating?: boolean; // 翻译中状态
 }
 
 interface BlockEditorProps {
@@ -37,6 +45,7 @@ interface BlockEditorProps {
   onBlocksChange?: (blocks: Block[]) => void;
   onBlockConfirmed?: () => void;
   isRecording?: boolean;
+  selectedLanguage?: string; // 当前选择的语言
 }
 
 export interface BlockEditorHandle {
@@ -179,6 +188,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   onBlocksChange,
   onBlockConfirmed,
   isRecording = false,
+  selectedLanguage = 'original', // 新增：默认显示原文
 }, ref) => {
   const [blocks, setBlocks] = useState<Block[]>(() => {
     // 初始化时优先使用initialBlocks，否则创建空blocks
@@ -194,6 +204,23 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const isComposingRef = useRef<boolean>(false);
   const previousConfirmedIdsRef = useRef<Set<string>>(new Set());
+
+  /**
+   * 获取要显示的内容（原文或译文）
+   */
+  const getBlockDisplayContent = useCallback((block: Block): string => {
+    if (selectedLanguage === 'original' || !selectedLanguage) {
+      return block.content;
+    }
+    
+    const translation = block.translations?.[selectedLanguage];
+    if (translation) {
+      return translation.content;
+    }
+    
+    // 如果没有翻译，显示原文
+    return block.content;
+  }, [selectedLanguage]);
 
   /**
    * 确保底部始终有一个缓冲块
@@ -1732,7 +1759,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             spellCheck={false}
             suppressHydrationWarning
             style={block.isAsrWriting ? { cursor: 'not-allowed', opacity: 0.7 } : undefined}
-            dangerouslySetInnerHTML={{ __html: block.content }}
+            dangerouslySetInnerHTML={{ __html: getBlockDisplayContent(block) }}
           />
           {hasTimeInfo && (
             <TimelineIndicator startTime={block.startTime} endTime={block.endTime} />
