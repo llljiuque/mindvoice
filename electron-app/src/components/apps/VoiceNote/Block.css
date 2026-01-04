@@ -243,14 +243,8 @@
 }
 
 .block-summary-container::before {
-  content: '✨ AI 生成的小结';
-  display: block;
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  color: #10b981;
-  margin-bottom: var(--space-sm);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  content: '';
+  display: none;
 }
 
 .block-summary-container:hover {

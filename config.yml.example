@@ -13,6 +13,13 @@ asr:
   access_key: ""  # 请填入你的 access_key
   language: zh-CN  # 识别语言：zh-CN（中文）或 en-US（英语）
   enable_nonstream: true  # 二遍识别：双向流式实时返回 + 非流式重新识别分句片段（快+准，仅限 bigmodel_async）
+  max_connection_duration: 5400  # 最大单次连接时长（秒），默认5400秒（90分钟）
+  # 说明：
+  # - 火山引擎ASR服务有单次连接时长限制（通常1-2小时）
+  # - 为避免被动断连，系统会在达到此时长前主动停止录音
+  # - 停止后会通知用户可以重新开始录音
+  # - 建议值：5400秒（90分钟）= 1.5小时，留有安全边界
+  # - 适用场景：长时间会议、演讲、课程录制等
 
 # LLM 配置（大语言模型）
 llm:
@@ -182,12 +189,17 @@ ui:
 
 # 日志配置
 logging:
-  level: INFO  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: WARNING  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
   console: true  # 是否输出到控制台
   file: true  # 是否输出到文件
   directory: logs  # 日志文件目录
   max_file_size_mb: 10  # 单个日志文件最大大小（MB）
   backup_count: 5  # 保留的日志文件数量
+cleanup:
+  enabled: true  # 是否启用自动清理
+  interval_hours: 24  # 清理间隔（小时）
+  log_retention_days: 7  # 日志保留天数
+  orphan_images: true  # 是否清理孤儿图片
   format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"  # 日志格式
   date_format: "%Y-%m-%d %H:%M:%S"  # 时间格式
   

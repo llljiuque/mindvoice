@@ -96,7 +96,6 @@ function App() {
   const voiceNoteAutoSave = useMemo(() => {
     return new AutoSaveService('voice-note', voiceNoteAdapter, undefined, {
       onRecordIdCreated: (recordId) => {
-        console.log('[App] AutoSave 创建了新记录:', recordId);
         setCurrentWorkingRecordId(recordId);
       }
     });
@@ -113,11 +112,9 @@ function App() {
     if (currentWorkingRecordId) {
       localStorage.setItem('currentWorkingRecordId', currentWorkingRecordId);
       localStorage.setItem('workSessionState', workSessionState);
-      console.log('[状态持久化] 保存状态:', { currentWorkingRecordId, workSessionState });
     } else {
       localStorage.removeItem('currentWorkingRecordId');
       localStorage.removeItem('workSessionState');
-      console.log('[状态持久化] 清空状态');
     }
   }, [currentWorkingRecordId, workSessionState]);
   
@@ -127,8 +124,6 @@ function App() {
     const savedState = localStorage.getItem('workSessionState') as WorkSessionState | null;
     
     if (savedRecordId && savedState === 'paused') {
-      console.log('[应用启动] 检测到未完成的任务:', savedRecordId);
-      
       // 自动设置状态（用户返回语音笔记时会触发恢复）
       setCurrentWorkingRecordId(savedRecordId);
       setWorkSessionState('paused');
@@ -142,15 +137,11 @@ function App() {
           duration: 5000
         });
       }, 1000);
-    } else {
-      console.log('[应用启动] 没有需要恢复的任务');
     }
   }, []);  // 只在组件挂载时执行一次
 
   // 开始工作会话
   const startWorkSession = (app: AppView, recordId?: string): boolean => {
-    console.log('[状态] 开始工作会话', { app, recordId, currentWorkingRecordId });
-    
     setActiveWorkingApp(app);
     setIsWorkSessionActive(true);
     
@@ -167,8 +158,6 @@ function App() {
 
   // 暂停工作会话（切换视图时调用）
   const pauseWorkSession = () => {
-    console.log('[状态] 暂停工作会话', { currentWorkingRecordId });
-    
     if (activeView === 'voice-note' && currentWorkingRecordId) {
       // 切换到 paused 状态，保留 recordId
       setWorkSessionState('paused');
@@ -178,8 +167,6 @@ function App() {
 
   // 结束工作会话（EXIT时调用）
   const endWorkSession = () => {
-    console.log('[状态] 结束工作会话', { currentWorkingRecordId });
-    
     setActiveWorkingApp(null);
     setIsWorkSessionActive(false);
     setWorkSessionState('idle');
@@ -236,14 +223,10 @@ function App() {
         );
         
         if (hasContent) {
-          console.log('[Exit] 开始保存所有数据，block 数量:', blocks.length);
-          
           // 过滤掉 note-info 和 buffer blocks，但保留所有其他 blocks（包括 isAsrWriting 的）
           const allBlocks = blocks.filter((b: any) => 
             b.type !== 'note-info' && !b.isBufferBlock
           );
-          
-          console.log('[Exit] 实际保存的 block 数量:', allBlocks.length);
           
           // 构建文本内容
           const textContent = allBlocks
@@ -269,16 +252,9 @@ function App() {
             },
           };
           
-          console.log('[Exit] 保存数据:', {
-            textLength: textContent.length,
-            blockCount: allBlocks.length,
-            hasNoteInfo: !!noteInfo,
-          });
-          
           // 更新或创建记录
           const recordId = voiceNoteAutoSave.getCurrentRecordId();
           if (recordId) {
-            console.log('[Exit] 更新现有记录:', recordId);
             const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
@@ -293,10 +269,7 @@ function App() {
             if (!result.success) {
               throw new Error(result.message || '更新记录失败');
             }
-            
-            console.log('[Exit] 记录更新成功');
           } else {
-            console.log('[Exit] 创建新记录');
             const response = await fetch(`${API_BASE_URL}/api/text/save`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -311,13 +284,10 @@ function App() {
             if (!result.success) {
               throw new Error(result.message || '创建记录失败');
             }
-            
-            console.log('[Exit] 记录创建成功:', result.record_id);
           }
           
           setToast({ message: '笔记已保存，退出成功', type: 'success' });
         } else {
-          console.log('[Exit] 没有内容，直接退出');
           setToast({ message: '已退出，可以开始新的记录', type: 'info' });
         }
         
@@ -339,15 +309,6 @@ function App() {
 
   // 应用切换处理
   const handleViewChange = async (newView: AppView) => {
-    console.log('[导航] 切换视图', { 
-      from: activeView, 
-      to: newView, 
-      asrState, 
-      currentWorkingRecordId,
-      workSessionState,
-      isReallyWorking
-    });
-    
     // 如果 ASR 正在录音，阻止切换
     if (asrState === 'recording') {
       const ownerName = asrOwner === 'voice-note' ? '语音笔记' : 
@@ -359,14 +320,12 @@ function App() {
         type: 'warning',
         duration: 3000
       });
-      console.warn(`[导航] 阻止切换：ASR 正在录音中 (所有者: ${asrOwner})`);
       return;
     }
     
     // 离开 voice-note 时
     if (activeView === 'voice-note' && newView !== 'voice-note') {
       if (isWorkSessionActive && currentWorkingRecordId) {
-        console.log('[导航] 离开语音笔记，保存并暂停工作会话');
         // 立即保存
         await voiceNoteAutoSave.saveToDatabase('view_switch', true);
         // 暂停工作会话（保留 recordId）
@@ -421,7 +380,6 @@ function App() {
       }
       
       // 否则，显示欢迎界面（没有正在进行的任务）
-      console.log('[导航] 没有正在进行的任务，显示欢迎界面');
       // 不需要额外操作，VoiceNote 组件会根据状态显示欢迎界面
       return;
     }
@@ -434,11 +392,9 @@ function App() {
   useEffect(() => {
     if (isWorkSessionActive && activeView === 'voice-note') {
       voiceNoteAutoSave.start();
-      console.log('[App] VoiceNote 自动保存服务已启动');
       
       return () => {
         voiceNoteAutoSave.stop();
-        console.log('[App] VoiceNote 自动保存服务已停止');
       };
     }
   }, [isWorkSessionActive, activeView, voiceNoteAutoSave]);
@@ -579,9 +535,7 @@ function App() {
     const handleAsrMessage = (data: any) => {
       try {
         // 只对重要消息类型打印日志，text_update 太频繁不打印
-        if (data.type !== 'text_update') {
-          console.log(`[IPC] 收到消息: type=${data.type}, activeView=${activeView}, asrOwner=${asrOwner}`);
-        }
+        // (已移除调试日志，保持代码简洁)
 
         switch (data.type) {
           case 'initial_state':
@@ -594,7 +548,6 @@ function App() {
             if (activeView === 'voice-note' && blockEditorRef.current) {
               blockEditorRef.current.appendAsrText(data.text || '', false);
             }
-            // TODO: 为 smart-chat 和 voice-zen 添加类似的处理
             break;
           case 'text_final':
             // 确定的结果（完整utterance）- 包含时间信息
@@ -608,7 +561,6 @@ function App() {
                 }
               );
             }
-            // TODO: 为 smart-chat 和 voice-zen 添加类似的处理
             break;
           case 'state_change':
             setAsrState(data.state);
@@ -621,6 +573,19 @@ function App() {
           case 'state_sync':
             // 新增：状态强制同步
             setAsrState(data.state);
+            break;
+          case 'asr_timeout':
+            // ASR连接超时
+            console.log('[IPC] ASR连接超时，已自动停止');
+            setAsrState('idle');
+            setAsrOwner(null);
+            
+            // 显示友好提示
+            setToast({
+              message: '语音识别已达到最大连接时长（90分钟），已自动停止。您可以重新开始录音。',
+              type: 'warning',
+              duration: 8000  // 显示8秒
+            });
             break;
           case 'error':
             // 后端必须返回完整的 SystemErrorInfo 对象

@@ -31,6 +31,7 @@ from src.services.voice_service import VoiceService
 from src.services.llm_service import LLMService
 from src.services.knowledge_service import KnowledgeService
 from src.services.export_service import MarkdownExportService
+from src.services.cleanup_service import CleanupService
 from src.utils.audio_recorder import SoundDeviceRecorder
 from src.agents import SummaryAgent, SmartChatAgent
 from src.agents.translation_agent import TranslationAgent
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     setup_voice_service()
     setup_llm_service()
+    setup_cleanup_service()
     
     # 在异步上下文中启动知识库模型的后台加载
     global knowledge_service
@@ -53,10 +55,19 @@ async def lifespan(app: FastAPI):
             # 只需要保留引用，防止被垃圾回收
             logger.info("[API] 已在后台启动 Embedding 模型加载任务")
     
+    # 启动清理服务
+    global cleanup_service
+    if cleanup_service:
+        await cleanup_service.start()
+    
     yield
     
     global voice_service, llm_service, recorder
     logger.info("[API] 正在关闭服务...")
+    
+    # 停止清理服务
+    if cleanup_service:
+        await cleanup_service.stop()
     
     if voice_service:
         try:
@@ -97,6 +108,7 @@ knowledge_service: Optional[KnowledgeService] = None
 summary_agent: Optional[SummaryAgent] = None
 smart_chat_agent: Optional[SmartChatAgent] = None
 translation_agent: Optional[TranslationAgent] = None
+cleanup_service: Optional[CleanupService] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
 
@@ -333,10 +345,40 @@ def setup_voice_service():
         
         voice_service.set_on_error_callback(on_error_callback)
         
+        # ASR连接超时回调
+        def on_timeout_callback():
+            """ASR连接超时回调，通知前端"""
+            logger.warning("[API] ASR连接超时，通知前端")
+            broadcast({
+                "type": "asr_timeout",
+                "message": "语音识别已达到最大连接时长，已自动停止。您可以重新开始录音。",
+                "app_id": voice_service._current_app_id if voice_service._current_app_id else None
+            })
+        
+        voice_service.set_on_timeout_callback(on_timeout_callback)
+        
         logger.info("[API] 语音服务初始化完成")
     except Exception as e:
         logger.error(f"[API] 语音服务初始化失败: {e}", exc_info=True)
         raise
+
+
+def setup_cleanup_service():
+    """初始化清理服务"""
+    global cleanup_service, config
+    
+    logger.info("[API] 初始化清理服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化清理服务
+        cleanup_service = CleanupService(config._config)
+        logger.info("[API] 清理服务初始化完成")
+    except Exception as e:
+        logger.error(f"[API] 清理服务初始化失败: {e}")
+        cleanup_service = None
 
 
 def setup_llm_service():
@@ -2071,6 +2113,48 @@ async def get_history_status():
     return SmartChatHistoryResponse(success=True, **summary)
 
 
+# ==================== 清理服务 API ====================
+
+@app.post("/api/cleanup/manual")
+async def manual_cleanup(clean_logs: bool = True, clean_images: bool = True):
+    """手动触发清理任务
+    
+    Args:
+        clean_logs: 是否清理日志文件
+        clean_images: 是否清理孤儿图片
+    
+    Returns:
+        清理结果
+    """
+    if not cleanup_service:
+        raise HTTPException(status_code=503, detail="清理服务未初始化")
+    
+    try:
+        result = await cleanup_service.manual_cleanup(clean_logs, clean_images)
+        return result
+    except Exception as e:
+        logger.error(f"手动清理失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
+
+
+@app.get("/api/cleanup/status")
+async def get_cleanup_status():
+    """获取清理服务状态"""
+    if not cleanup_service:
+        return {
+            "enabled": False,
+            "message": "清理服务未初始化"
+        }
+    
+    return {
+        "enabled": cleanup_service.enabled,
+        "running": cleanup_service._running,
+        "interval_hours": cleanup_service.interval_hours,
+        "log_retention_days": cleanup_service.log_retention_days,
+        "orphan_images_enabled": cleanup_service.orphan_images_enabled
+    }
+
+
 # ==================== 知识库 API ====================
 
 class KnowledgeUploadRequest(BaseModel):
@@ -2247,86 +2331,11 @@ async def clear_messages():
         }
 
 
-# ==================== WebSocket API（保留但标记为废弃）====================
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket端点 - 用于实时文本和状态更新（单连接模式）
-    
-    消息类型：
-    1. initial_state - 初始状态
-       { "type": "initial_state", "state": "idle|recording|paused|stopping", "text"?: "..." }
-    
-    2. text_update - 中间识别结果（实时更新）
-       { "type": "text_update", "text": "..." }
-    
-    3. text_final - 确定的完整utterance（包含时间信息，文本已在后端累加处理）
-       { "type": "text_final", "text": "...", "start_time": 1234, "end_time": 5678 }
-       注：start_time 和 end_time 单位为毫秒，相对于音频流开始时间
-           text 字段已包含后端累加后的完整文本（间隔<800ms的句子会自动累加）
-    
-    4. state_change - 状态变更
-       { "type": "state_change", "state": "idle|recording|paused|stopping" }
-    
-    5. error - 错误消息
-       { "type": "error", "error_type": "...", "message": "..." }
-    """
-    global current_connection
-    
-    await websocket.accept()
-    
-    # 关闭旧连接（如果存在）
-    if current_connection:
-        try:
-            logger.info("[API] 检测到旧连接，关闭旧连接")
-            await current_connection.close()
-        except Exception as e:
-            logger.warning(f"[API] 关闭旧连接失败: {e}")
-    
-    # 设置为当前连接
-    current_connection = websocket
-    logger.info("[API] WebSocket连接已建立（单连接模式）")
-    
-    try:
-        # 发送初始状态（原生app设计：初始状态应该是干净的）
-        if voice_service:
-            state = voice_service.get_state()
-            current_text = getattr(voice_service, '_current_text', '')
-            # 只在有实际文本时才包含text字段（原生app初始状态应该是空的）
-            initial_state_msg = {
-                "type": "initial_state",
-                "state": state.value
-            }
-            if current_text:  # 只在有文本时包含
-                initial_state_msg["text"] = current_text
-            await websocket.send_json(initial_state_msg)
-        
-        # 保持连接，等待客户端消息
-        while True:
-            try:
-                data = await websocket.receive_json()
-                logger.debug(f"[API] 收到WebSocket消息: {data}")
-                # 可以在这里处理客户端发送的消息（如ping/pong等）
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"[API] WebSocket消息处理错误: {e}")
-                break
-    except WebSocketDisconnect:
-        pass
-    finally:
-        # 清空当前连接引用
-        if current_connection == websocket:
-            current_connection = None
-        logger.info("[API] WebSocket连接已断开")
-
-
 # ==================== 服务器启动 ====================
 
 def run_server(host: str = "127.0.0.1", port: int = 8765):
     """运行API服务器"""
     logger.info(f"[API] 启动API服务器: http://{host}:{port}")
-    logger.info(f"[API] WebSocket端点: ws://{host}:{port}/ws")
     uvicorn.run(
         app,
         host=host,

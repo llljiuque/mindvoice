@@ -3,6 +3,8 @@
 """
 import asyncio
 import logging
+import time
+import threading
 from typing import Optional, Callable, Union
 from ..core.base import RecordingState, AudioRecorder
 from ..core.config import Config
@@ -30,12 +32,18 @@ class VoiceService:
         self._on_text_callback: Optional[Callable[[str, bool, dict], None]] = None
         self._on_state_change_callback: Optional[Callable[[RecordingState], None]] = None
         self._on_error_callback: Optional[Callable[[str, str], None]] = None
+        self._on_timeout_callback: Optional[Callable[[], None]] = None  # ASR连接超时回调
         
         self._streaming_active = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._current_text = ""
         self._current_session_id: Optional[str] = None
         self._current_app_id: Optional[str] = None  # 当前使用ASR的应用ID
+        
+        # ASR连接时长监控
+        self._asr_start_time: Optional[float] = None
+        self._asr_timeout_timer: Optional[threading.Timer] = None
+        self._max_connection_duration: int = self.config.get('asr.max_connection_duration', 5400)  # 默认90分钟
         
         self._initialize_providers()
     
@@ -138,6 +146,10 @@ class VoiceService:
     def set_on_error_callback(self, callback: Callable[[str, str], None]):
         """设置错误回调函数"""
         self._on_error_callback = callback
+    
+    def set_on_timeout_callback(self, callback: Callable[[], None]):
+        """设置ASR连接超时回调函数"""
+        self._on_timeout_callback = callback
     
     def start_recording(self, app_id: str = None) -> bool:
         """
@@ -248,6 +260,8 @@ class VoiceService:
                 else:
                     self._streaming_active = True
                     logger.info("[语音服务] ✓ ASR已启动（由AudioASRGateway触发）")
+                    # 启动超时监控
+                    self._start_timeout_monitor()
             
             # 使用 run_coroutine_threadsafe 从任何线程安全调用
             # 因为回调可能在音频消费线程中触发
@@ -266,6 +280,8 @@ class VoiceService:
                 
                 self._streaming_active = True
                 logger.info("[语音服务] ✓ ASR已启动（由AudioASRGateway触发）")
+                # 启动超时监控
+                self._start_timeout_monitor()
         except Exception as e:
             error_msg = f"启动ASR失败: {str(e)}"
             logger.error(f"[语音服务] {error_msg}", exc_info=True)
@@ -372,6 +388,8 @@ class VoiceService:
         """
         logger.info("[语音服务] ASR已断开连接，重置状态")
         self._streaming_active = False
+        # 取消超时定时器
+        self._cancel_timeout_monitor()
     
     def pause_recording(self) -> bool:
         """暂停录音"""
@@ -476,6 +494,8 @@ class VoiceService:
         finally:
             # 确保流式识别被标记为非激活状态
             self._streaming_active = False
+            # 取消超时定时器
+            self._cancel_timeout_monitor()
             # 无论如何都要确保状态被重置为IDLE
             self._notify_state_change(RecordingState.IDLE)
             logger.info("[语音服务] 录音已停止，状态: IDLE")
@@ -523,6 +543,87 @@ class VoiceService:
         """获取当前时间戳"""
         from datetime import datetime
         return datetime.now().isoformat()
+    
+    def _start_timeout_monitor(self):
+        """启动ASR连接超时监控"""
+        # 取消之前的定时器
+        self._cancel_timeout_monitor()
+        
+        # 记录ASR启动时间
+        self._asr_start_time = time.time()
+        
+        if self._max_connection_duration <= 0:
+            logger.info("[语音服务] ASR连接时长限制已禁用（max_connection_duration <= 0）")
+            return
+        
+        # 计算可读的时长
+        hours = self._max_connection_duration // 3600
+        minutes = (self._max_connection_duration % 3600) // 60
+        seconds = self._max_connection_duration % 60
+        
+        duration_str = []
+        if hours > 0:
+            duration_str.append(f"{hours}小时")
+        if minutes > 0:
+            duration_str.append(f"{minutes}分钟")
+        if seconds > 0 or not duration_str:
+            duration_str.append(f"{seconds}秒")
+        
+        logger.info(f"[语音服务] 启动ASR连接超时监控，限制时长: {''.join(duration_str)} ({self._max_connection_duration}秒)")
+        
+        # 创建定时器
+        self._asr_timeout_timer = threading.Timer(
+            self._max_connection_duration,
+            self._on_asr_timeout
+        )
+        self._asr_timeout_timer.daemon = True
+        self._asr_timeout_timer.start()
+    
+    def _cancel_timeout_monitor(self):
+        """取消ASR连接超时监控"""
+        if self._asr_timeout_timer:
+            self._asr_timeout_timer.cancel()
+            self._asr_timeout_timer = None
+            
+            if self._asr_start_time:
+                elapsed = time.time() - self._asr_start_time
+                hours = int(elapsed // 3600)
+                minutes = int((elapsed % 3600) // 60)
+                seconds = int(elapsed % 60)
+                logger.info(f"[语音服务] 取消ASR超时监控，已运行: {hours:02d}:{minutes:02d}:{seconds:02d}")
+                self._asr_start_time = None
+    
+    def _on_asr_timeout(self):
+        """ASR连接超时处理"""
+        if not self._streaming_active:
+            logger.debug("[语音服务] ASR已停止，忽略超时事件")
+            return
+        
+        # 计算实际运行时长
+        elapsed = time.time() - self._asr_start_time if self._asr_start_time else 0
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        
+        logger.warning(f"[语音服务] ⚠️ ASR连接已达到最大时长限制 ({hours:02d}:{minutes:02d}:{seconds:02d})，主动停止录音")
+        
+        # 主动停止录音
+        try:
+            # 通知前端超时
+            if self._on_timeout_callback:
+                self._on_timeout_callback()
+            
+            # 停止录音
+            self.stop_recording()
+            
+        except Exception as e:
+            logger.error(f"[语音服务] 超时处理失败: {e}", exc_info=True)
+    
+    def get_asr_connection_duration(self) -> int:
+        """获取当前ASR连接已运行时长（秒）"""
+        if not self._streaming_active or not self._asr_start_time:
+            return 0
+        return int(time.time() - self._asr_start_time)
     
     def cleanup(self):
         """清理资源"""
