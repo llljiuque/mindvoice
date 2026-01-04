@@ -220,7 +220,8 @@ class MessageBuffer:
     def clear(self):
         """清空缓冲区"""
         self.messages = []
-        logger.info("[消息缓冲] 缓冲区已清空")
+        self.counter = 0  # 同时重置计数器，避免ID不连续
+        logger.info("[消息缓冲] 缓冲区已清空，counter已重置")
 
 # 全局消息缓冲区
 message_buffer = MessageBuffer()
@@ -337,12 +338,17 @@ def setup_llm_service():
             
             # 初始化知识库服务（延迟加载模式，不阻塞启动）
             try:
+                # 从配置读取知识库目录
+                data_dir = Path(config.get('storage.data_dir')).expanduser()
+                knowledge_relative = Path(config.get('storage.knowledge'))
+                
                 knowledge_service = KnowledgeService(
-                    storage_path="./data/knowledge",
-                    embedding_model="all-MiniLM-L6-v2",
-                    lazy_load=True  # 启用延迟加载
+                    data_dir=data_dir,
+                    knowledge_relative_path=knowledge_relative,
+                    embedding_model=config.get('knowledge.embedding_model', 'all-MiniLM-L6-v2'),
+                    lazy_load=config.get('knowledge.lazy_load', True)
                 )
-                logger.info("[API] 知识库服务初始化成功（延迟加载模式，模型将在后台加载）")
+                logger.info(f"[API] 知识库服务初始化成功（延迟加载模式，路径: {data_dir / knowledge_relative}）")
             except Exception as e:
                 logger.warning(f"[API] 知识库服务初始化失败（可能是依赖未安装）: {e}")
                 knowledge_service = None
@@ -574,6 +580,7 @@ class SaveTextRequest(BaseModel):
     text: str
     app_type: str = 'voice-note'
     blocks: Optional[list] = None
+    metadata: Optional[dict] = None  # 完整的metadata（包含blocks, noteInfo等）
 
 
 class SaveTextResponse(BaseModel):
@@ -601,6 +608,8 @@ async def save_text_directly(request: SaveTextRequest):
     
     try:
         if not request.text or not request.text.strip():
+            has_metadata = bool(request.metadata)
+            logger.warning(f"[API] 文本保存被拒绝: 内容为空 (app_type={request.app_type}, metadata={'有' if has_metadata else '无'})")
             error_info = SystemErrorInfo(
                 SystemError.STORAGE_WRITE_FAILED,
                 details="文本内容为空",
@@ -612,17 +621,40 @@ async def save_text_directly(request: SaveTextRequest):
                 error=error_info.to_dict()
             )
         
-        metadata = {
-            'language': voice_service.config.get('asr.language', 'zh-CN'),
-            'provider': 'manual',
-            'input_method': 'keyboard',
-            'app_type': request.app_type,
-            'created_at': voice_service._get_timestamp(),
-            'blocks': request.blocks
-        }
+        # 构建 metadata
+        # 优先使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
+        if request.metadata:
+            # 前端传来了完整的 metadata，直接使用
+            metadata = request.metadata
+            # 确保包含必要的系统字段
+            if 'language' not in metadata:
+                metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
+            if 'provider' not in metadata:
+                metadata['provider'] = 'manual'
+            if 'input_method' not in metadata:
+                metadata['input_method'] = 'keyboard'
+            if 'app_type' not in metadata:
+                metadata['app_type'] = request.app_type
+            if 'created_at' not in metadata:
+                metadata['created_at'] = voice_service._get_timestamp()
+        else:
+            # 降级：使用旧的 blocks 字段（向后兼容）
+            metadata = {
+                'language': voice_service.config.get('asr.language', 'zh-CN'),
+                'provider': 'manual',
+                'input_method': 'keyboard',
+                'app_type': request.app_type,
+                'created_at': voice_service._get_timestamp(),
+                'blocks': request.blocks
+            }
         
         record_id = voice_service.storage_provider.save_record(request.text, metadata)
-        logger.info(f"[API] 已直接保存文本记录: {record_id}, blocks数据: {'有' if request.blocks else '无'}")
+        
+        # 日志：显示保存的数据结构
+        has_blocks = bool(metadata.get('blocks'))
+        has_note_info = bool(metadata.get('noteInfo'))
+        trigger = metadata.get('trigger', 'unknown')
+        logger.info(f"[API] 已直接保存文本记录: {record_id}, trigger={trigger}, blocks={'有' if has_blocks else '无'}, noteInfo={'有' if has_note_info else '无'}")
         
         return SaveTextResponse(
             success=True,
@@ -703,20 +735,40 @@ async def update_record(record_id: str, request: SaveTextRequest):
             )
         
         # 构建更新的 metadata
-        metadata = {
-            'language': voice_service.config.get('asr.language', 'zh-CN'),
-            'provider': 'manual',
-            'input_method': 'keyboard',
-            'app_type': request.app_type,
-            'updated_at': voice_service._get_timestamp(),
-            'blocks': request.blocks,
-        }
+        # 优先使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
+        if request.metadata:
+            # 前端传来了完整的 metadata，直接使用
+            metadata = request.metadata
+            # 确保包含必要的系统字段
+            if 'language' not in metadata:
+                metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
+            if 'provider' not in metadata:
+                metadata['provider'] = 'manual'
+            if 'input_method' not in metadata:
+                metadata['input_method'] = 'keyboard'
+            if 'app_type' not in metadata:
+                metadata['app_type'] = request.app_type
+            metadata['updated_at'] = voice_service._get_timestamp()
+        else:
+            # 降级：使用旧的 blocks 字段（向后兼容）
+            metadata = {
+                'language': voice_service.config.get('asr.language', 'zh-CN'),
+                'provider': 'manual',
+                'input_method': 'keyboard',
+                'app_type': request.app_type,
+                'updated_at': voice_service._get_timestamp(),
+                'blocks': request.blocks,
+            }
         
         # 更新记录
         success = voice_service.storage_provider.update_record(record_id, request.text, metadata)
         
         if success:
-            logger.info(f"[API] 已更新记录: {record_id}, blocks数据: {'有' if request.blocks else '无'}")
+            # 日志：显示保存的数据结构
+            has_blocks = bool(metadata.get('blocks'))
+            has_note_info = bool(metadata.get('noteInfo'))
+            trigger = metadata.get('trigger', 'unknown')
+            logger.info(f"[API] 已更新记录: {record_id}, trigger={trigger}, blocks={'有' if has_blocks else '无'}, noteInfo={'有' if has_note_info else '无'}")
             return SaveTextResponse(
                 success=True,
                 record_id=record_id,
@@ -1021,7 +1073,9 @@ async def save_image(request: SaveImageRequest):
             )
         
         # 创建图片存储目录
-        images_dir = project_root / "data" / "images"
+        data_dir = Path(config.get('storage.data_dir')).expanduser()
+        images_relative = Path(config.get('storage.images'))
+        images_dir = data_dir / images_relative
         images_dir.mkdir(parents=True, exist_ok=True)
         
         # 生成唯一文件名
@@ -1076,7 +1130,10 @@ async def get_image(filename: str):
         if '..' in filename or '/' in filename or '\\' in filename:
             raise HTTPException(status_code=400, detail="无效的文件名")
         
-        image_path = project_root / "data" / "images" / filename
+        # 从配置读取图片目录
+        data_dir = Path(config.get('storage.data_dir')).expanduser()
+        images_relative = Path(config.get('storage.images'))
+        image_path = data_dir / images_relative / filename
         
         if not image_path.exists():
             raise HTTPException(status_code=404, detail="图片不存在")
@@ -1933,6 +1990,35 @@ async def get_messages(after_id: int = 0):
             "success": False,
             "error": str(e),
             "messages": []
+        }
+
+
+@app.post("/api/messages/clear")
+async def clear_messages():
+    """
+    清空消息缓冲区（用于前端重启或HMR时避免消息堆积）
+    
+    返回：
+        {
+            "success": true,
+            "message": "消息缓冲区已清空"
+        }
+    """
+    try:
+        old_size = len(message_buffer.messages)
+        old_counter = message_buffer.counter
+        message_buffer.clear()
+        logger.info(f"[API] 消息缓冲区已清空: 清除了 {old_size} 条消息，counter从 {old_counter} 重置为 0")
+        return {
+            "success": True,
+            "message": f"消息缓冲区已清空（清除了 {old_size} 条消息）",
+            "cleared_count": old_size
+        }
+    except Exception as e:
+        logger.error(f"[API] 清空消息缓冲区失败: {e}")
+        return {
+            "success": False,
+            "error": str(e)
         }
 
 

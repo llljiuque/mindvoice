@@ -12,7 +12,7 @@ class Config:
     """配置管理器
     
     配置优先级（ASR配置）：
-    1. 用户自定义配置（~/.voice_assistant/user_asr_config.yml）
+    1. 用户自定义配置（~/Library/Application Support/MindVoice/user_asr_config.yml）
     2. 项目根目录的 config.yml（厂商配置）
     3. 默认配置
     
@@ -25,14 +25,19 @@ class Config:
         """初始化配置
         
         Args:
-            config_dir: 配置目录路径，默认为 ~/.voice_assistant（用于存储数据库等）
+            config_dir: 配置目录路径（仅用于用户ASR配置），默认使用 storage.data_dir
         """
         # 项目根目录（假设 config.py 在 src/core/ 下）
         project_root = Path(__file__).parent.parent.parent
         self.project_config_file = project_root / 'config.yml'
         
+        # 加载配置文件
+        self._config = self._load_config()
+        
+        # 设置配置目录（用于用户ASR配置）
         if config_dir is None:
-            config_dir = os.path.join(os.path.expanduser('~'), '.voice_assistant')
+            # 使用 storage.data_dir 作为配置目录
+            config_dir = Path(self.get('storage.data_dir', '~/Library/Application Support/MindVoice')).expanduser()
         
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -40,8 +45,7 @@ class Config:
         # 用户自定义ASR配置文件路径
         self.user_asr_config_file = self.config_dir / 'user_asr_config.yml'
         
-        # 加载配置文件
-        self._config = self._load_config()
+        # 加载用户ASR配置
         self._user_asr_config = self._load_user_asr_config()
     
     def _load_config(self) -> Dict[str, Any]:
@@ -85,7 +89,11 @@ class Config:
             },
             'storage': {
                 'type': 'sqlite',
-                'path': str(self.config_dir / 'history.db')
+                'data_dir': '~/Library/Application Support/MindVoice',
+                'database': 'database/history.db',
+                'images': 'images',
+                'knowledge': 'knowledge',
+                'backups': 'backups'
             },
             'audio': {
                 'format': 'WAV',

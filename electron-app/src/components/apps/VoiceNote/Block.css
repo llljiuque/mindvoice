@@ -439,3 +439,46 @@
   font-size: var(--font-size-sm);
 }
 
+/* 拖拽相关样式 */
+.block-dragging {
+  opacity: 0.5;
+  transform: scale(0.98);
+  cursor: grabbing !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  background: var(--color-bg-secondary);
+}
+
+.block-dragging * {
+  cursor: grabbing !important;
+}
+
+.block-drag-over {
+  border-top: 3px solid var(--color-primary);
+  border-radius: 0;
+  margin-top: -3px;
+  background: rgba(99, 102, 241, 0.05);
+  animation: drag-over-pulse 0.6s ease-in-out infinite;
+}
+
+@keyframes drag-over-pulse {
+  0%, 100% {
+    background: rgba(99, 102, 241, 0.05);
+    border-top-color: var(--color-primary);
+  }
+  50% {
+    background: rgba(99, 102, 241, 0.1);
+    border-top-color: #818cf8;
+  }
+}
+
+.block-handle:active {
+  cursor: grabbing;
+  transform: scale(0.95);
+}
+
+/* 拖拽时隐藏删除按钮 */
+.block-dragging .block-delete-btn {
+  display: none !important;
+}
+

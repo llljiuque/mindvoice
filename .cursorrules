@@ -181,28 +181,96 @@ type WSMessageType =
 
 ### 数据库选型
 - **主数据库**: SQLite 3
-- **位置**: `~/.voice_assistant/history.db`
-- **用途**: 存储历史记录、元数据、笔记信息
+- **位置**: 由 `config.yml` 中的 `storage.data_dir` + `storage.database` 配置决定
+- **用途**: 存储所有应用的历史记录、元数据、笔记信息
+- **共享机制**: 3个应用（voice-note, voice-chat, voice-zen）共享同一数据库，通过 `app_type` 字段区分
+- **路径处理**: 使用 `Path(db_path).expanduser()` 展开 `~` 为用户主目录
+
+### 统一存储配置
+
+**配置结构**（`config.yml`）：
+```yaml
+storage:
+  data_dir: <平台相关路径>  # 数据根目录
+  database: database/history.db    # 数据库相对路径
+  images: images                   # 图片目录相对路径
+  knowledge: knowledge             # 知识库目录相对路径
+  backups: backups                 # 备份目录相对路径
+```
+
+**跨平台数据目录规范**：
+- **macOS**: `~/Library/Application Support/MindVoice`
+- **Linux**: `~/.local/share/MindVoice`
+- **Windows**: `%APPDATA%\MindVoice` (通常是 `C:\Users\用户名\AppData\Roaming\MindVoice`)
+- **iOS**: `~/Documents/MindVoice`
+- **Android**: `/data/data/com.mindvoice.app/files/MindVoice`
+- **通用简化**: `~/MindVoice` (桌面平台均可用)
+
+**Electron 缓存目录**（独立于应用数据）：
+- **macOS**: `~/Library/Application Support/MindVoice-App`
+- **Linux**: `~/.config/MindVoice-App`
+- **Windows**: `%APPDATA%\MindVoice-App`
+- **作用**: 存储 Electron/Chromium 的浏览器缓存、Cookie、Local Storage 等
+
+**目录结构**：
+```
+<data_dir>/  (应用数据，平台相关)
+├── database/
+│   └── history.db                        # 历史记录数据库
+├── images/
+│   └── *.png                             # 用户上传的图片
+├── knowledge/
+│   ├── chroma/                           # 向量数据库
+│   │   └── chroma.sqlite3
+│   └── files/                            # 原始知识库文件
+│       └── *.md, *.txt
+└── backups/
+    └── *.db.backup                       # 数据库备份
+```
+
+**路径处理规范**：
+```python
+# Python 代码中读取配置（跨平台）
+from src.utils.platform_paths import expand_data_dir
+
+storage_config = config['storage']
+data_dir = expand_data_dir(storage_config['data_dir'])  # 自动展开 ~ 和环境变量
+db_path = data_dir / storage_config['database']
+images_dir = data_dir / storage_config['images']
+```
+
+```bash
+# Shell 脚本中读取配置（跨平台兼容）
+DATA_DIR_RAW=$(grep '^\s*data_dir:' config.yml | sed 's/.*data_dir:\s*//; s/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+DATA_DIR="${DATA_DIR_RAW/#\~/$HOME}"  # 展开 ~ 为 $HOME
+DB_PATH="$DATA_DIR/database/history.db"
+```
+
+**初始化配置**：
+```bash
+# 自动生成适合当前平台的配置
+python scripts/init_config.py
+```
 
 ### 数据库表结构
 
-#### records 表
+#### records 表（里程碑基准版本）
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    id TEXT PRIMARY KEY,                -- UUID格式记录ID
-    text TEXT NOT NULL,                 -- 笔记文本内容
-    metadata TEXT,                      -- JSON格式元数据
-    app_type TEXT DEFAULT 'voice-note', -- 应用类型
-    created_at TIMESTAMP                -- 创建时间（本地时区）
-)
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    metadata TEXT,
+    app_type TEXT NOT NULL DEFAULT 'voice-note',
+    created_at TIMESTAMP NOT NULL
+);
 ```
 
 **字段说明**：
-- `id`: 使用 UUID v4，如 `9ca7eb50-d029-4397-8350-ff7e94b2edd9`
+- `id`: 记录ID，UUID v4 格式
 - `text`: 纯文本内容，用于搜索和预览
-- `metadata`: JSON字符串，包含 blocks、noteInfo 等结构化数据
-- `app_type`: 标识来源应用，用于筛选
-- `created_at`: **必须使用本地时间**，格式 `YYYY-MM-DD HH:MM:SS`
+- `metadata`: JSON 格式元数据（blocks、noteInfo 等）
+- `app_type`: 应用类型，必需字段（voice-note/voice-chat/voice-zen）
+- `created_at`: 创建时间，必需字段，本地时间格式 `YYYY-MM-DD HH:MM:SS`
 
 ### metadata 字段结构
 ```json
@@ -231,11 +299,10 @@ CREATE TABLE IF NOT EXISTS records (
 }
 ```
 
-### 时间处理规范 ⚠️ 重要
+### 时间处理规范
 
-#### 规则1：保存时使用本地时间
+#### 本地时间保存
 ```python
-# Python 后端 - 正确做法
 from datetime import datetime
 
 def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
@@ -246,28 +313,12 @@ def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
     ''', (record_id, text, json_metadata, app_type, created_at))
 ```
 
-**禁止做法**：
+#### 路径展开
 ```python
-# ❌ 错误：依赖数据库的 CURRENT_TIMESTAMP（默认UTC时间）
-cursor.execute('''
-    INSERT INTO records (id, text, metadata, app_type)
-    VALUES (?, ?, ?, ?)
-''')  # created_at 会自动使用 CURRENT_TIMESTAMP（UTC时间）
-```
-
-#### 规则2：路径展开
-```python
-# ✅ 正确：必须展开 ~ 路径
 from pathlib import Path
 
 db_path = config.get('path', 'history.db')
 self.db_path = Path(db_path).expanduser()  # 展开 ~ 为用户主目录
-```
-
-**禁止做法**：
-```python
-# ❌ 错误：不展开会创建在项目根目录的 ~ 文件夹
-self.db_path = Path(db_path)  # ~/.voice_assistant/history.db 变成 ./~/.voice_assistant/history.db
 ```
 
 ### 数据库操作规范
@@ -275,7 +326,7 @@ self.db_path = Path(db_path)  # ~/.voice_assistant/history.db 变成 ./~/.voice_
 #### 1. 创建记录
 ```python
 def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
-    """保存新记录"""
+    """创建新记录"""
     import uuid
     record_id = str(uuid.uuid4())
     app_type = metadata.get('app_type', 'voice-note')
@@ -292,7 +343,7 @@ def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
 #### 2. 更新记录
 ```python
 def update_record(self, record_id: str, text: str, metadata: Dict[str, Any]) -> bool:
-    """更新现有记录（增量保存）"""
+    """更新已有记录"""
     cursor.execute('''
         UPDATE records
         SET text = ?, metadata = ?
@@ -327,7 +378,7 @@ def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
 #### 4. 列表查询
 ```python
 def list_records(self, limit: int = 100, offset: int = 0, app_type: Optional[str] = None):
-    """分页查询记录，支持应用类型筛选"""
+    """查询记录列表，按创建时间倒序"""
     if app_type:
         cursor.execute('''
             SELECT id, text, metadata, app_type, created_at
@@ -349,7 +400,7 @@ def list_records(self, limit: int = 100, offset: int = 0, app_type: Optional[str
 
 #### 前端恢复逻辑
 ```typescript
-// App.tsx - loadRecord 函数
+// 从数据库恢复记录
 const loadRecord = async (recordId: string) => {
   const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
   const data = await response.json();
@@ -357,12 +408,11 @@ const loadRecord = async (recordId: string) => {
   if (data.text) {
     setText(data.text);
     
-    // 检查是否有 blocks 数据
-    if (data.metadata?.blocks && Array.isArray(data.metadata.blocks) && data.metadata.blocks.length > 0) {
-      // 有 blocks：直接恢复
+    // 优先使用 metadata.blocks
+    if (data.metadata?.blocks?.length > 0) {
       setInitialBlocks(data.metadata.blocks);
     } else {
-      // 无 blocks：从纯文本创建
+      // 降级：从纯文本创建 blocks
       const textBlocks = data.text.split('\n')
         .filter(line => line.trim())
         .map((line, index) => ({
@@ -371,111 +421,271 @@ const loadRecord = async (recordId: string) => {
           content: line,
           isAsrWriting: false,
         }));
-      
       setInitialBlocks([noteInfoBlock, ...textBlocks]);
     }
-    
-    setActiveView('voice-note');
-    startWorkSession('voice-note');
   }
 };
 ```
-
-### 数据库迁移规范
-
-#### 自动迁移逻辑
-```python
-def _create_table(self):
-    """创建表并自动迁移"""
-    conn = sqlite3.connect(str(self.db_path))
-    cursor = conn.cursor()
-    
-    # 创建表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS records (
-            id TEXT PRIMARY KEY,
-            text TEXT NOT NULL,
-            metadata TEXT,
-            app_type TEXT DEFAULT 'voice-note',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # 检查是否需要添加字段
-    cursor.execute("PRAGMA table_info(records)")
-    columns = [col[1] for col in cursor.fetchall()]
-    
-    if 'app_type' not in columns:
-        cursor.execute('ALTER TABLE records ADD COLUMN app_type TEXT DEFAULT "voice-note"')
-        logger.info("[Storage] 数据库迁移：已添加 app_type 字段")
-    
-    conn.commit()
-    conn.close()
-```
-
-### 常见问题和解决方案
-
-#### 问题1：时间显示相差8小时
-**原因**：数据库使用 UTC 时间，前端未转换  
-**解决**：保存时使用 `datetime.now()` 而非 `CURRENT_TIMESTAMP`
-
-#### 问题2：路径展开失败
-**原因**：`Path(~)` 不会自动展开波浪号  
-**解决**：使用 `Path().expanduser()`
-
-#### 问题3：恢复内容为空
-**原因**：`blocks` 为 `null`，但未从纯文本创建  
-**解决**：检查 `blocks` 存在性和长度，不存在时从 `text` 创建
-
-#### 问题4：多个数据库文件
-**原因**：路径配置错误或路径未展开  
-**解决**：确保使用 `.expanduser()` 并检查配置路径
 
 ### 数据库维护
 
 #### 数据备份
 ```bash
+# 获取数据库路径（从config.yml读取）
+DB_PATH=$(grep 'path:' config.yml | awk '{print $2}' | sed 's/~/$HOME/g')
+
 # 手动备份
-cp ~/.voice_assistant/history.db ~/.voice_assistant/history.db.backup
+cp "$DB_PATH" "${DB_PATH}.backup"
 
 # 查看记录数
-sqlite3 ~/.voice_assistant/history.db "SELECT COUNT(*) FROM records;"
+sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM records;"
 ```
 
-#### 数据清理
-```python
-def delete_old_records(self, days: int = 90):
-    """删除N天前的记录"""
-    cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    cursor.execute('DELETE FROM records WHERE created_at < ?', (cutoff_date,))
+#### 数据库重建
+```bash
+# 使用提供的脚本（自动从config.yml读取路径）
+./scripts/rebuild_database.sh
 ```
 
 ### 性能优化
 
 #### 索引建议
 ```sql
--- 为常用查询字段创建索引
+-- 按创建时间倒序查询
 CREATE INDEX idx_created_at ON records(created_at DESC);
+
+-- 按应用类型筛选
 CREATE INDEX idx_app_type ON records(app_type);
+
+-- 组合索引
 CREATE INDEX idx_app_type_created_at ON records(app_type, created_at DESC);
 ```
 
-#### 批量操作
+## 图片处理规范 ⭐
+
+### 图片存储架构
+
+#### 存储位置
+- **图片文件**: `data/images/{timestamp}-{hash}.{ext}`
+- **数据库**: metadata.blocks 中的 imageUrl 字段
+- **格式**: 相对路径，如 `images/261619072-6ddaa776.png`
+
+#### 图片块结构
+```typescript
+{
+  id: "block-xxx",
+  type: "image",
+  content: "",  // 图片块的 content 为空字符串
+  imageUrl: "images/261619072-6ddaa776.png",  // 相对路径
+  imageCaption?: "图片说明"  // 可选的说明文字
+}
+```
+
+### 图片上传流程
+
+#### 前端上传
+```typescript
+// BlockEditor.tsx - 粘贴图片处理
+const reader = new FileReader();
+reader.onload = async (event) => {
+  const base64Data = event.target?.result as string;
+  
+  // 调用API上传
+  const response = await fetch(`${API_BASE_URL}/api/images/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_data: base64Data })
+  });
+  
+  const result = await response.json();
+  // result.image_url = "images/261619072-6ddaa776.png"
+};
+```
+
+#### 后端保存
 ```python
-# 使用事务批量插入
-conn = self._get_connection()
-try:
-    cursor = conn.cursor()
-    cursor.executemany('''
-        INSERT INTO records (id, text, metadata, app_type, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    ''', records_batch)
-    conn.commit()
-except Exception as e:
-    conn.rollback()
-    raise
-finally:
-    conn.close()
+# server.py - 图片保存API
+@app.post("/api/images/save")
+async def save_image(request: SaveImageRequest):
+    # 1. 解码 Base64
+    image_bytes = base64.b64decode(image_data)
+    
+    # 2. 生成唯一文件名
+    timestamp = int(time.time() * 1000)
+    hash_str = hashlib.md5(image_bytes[:1024]).hexdigest()[:8]
+    filename = f"{timestamp}-{hash_str}.{ext}"
+    
+    # 3. 保存到 data/images/
+    image_path = project_root / "data" / "images" / filename
+    with open(image_path, 'wb') as f:
+        f.write(image_bytes)
+    
+    # 4. 返回相对路径
+    return {"success": True, "image_url": f"images/{filename}"}
+```
+
+### 图片保存到数据库
+
+#### text 字段处理规范 ⚠️ 重要
+**规则**: text 字段必须包含图片占位符，确保从纯文本恢复时不丢失图片信息
+
+```typescript
+// VoiceNoteAdapter.ts - toSaveData()
+const textContent = blocks
+  .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
+  .map(b => {
+    if (b.type === 'image') {
+      // ✅ 正确：添加图片占位符
+      return `[IMAGE: ${b.imageUrl || ''}]${b.imageCaption ? ' ' + b.imageCaption : ''}`;
+    }
+    return b.content;
+  })
+  .filter(text => text.trim())
+  .join('\n');
+```
+
+**禁止做法**：
+```typescript
+// ❌ 错误：图片块被过滤掉，导致纯文本恢复时丢失
+const textContent = blocks
+  .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
+  .map(b => b.content)  // 图片块的 content 为空
+  .filter(text => text.trim())  // 空字符串被过滤
+  .join('\n');
+```
+
+#### metadata 字段
+- `metadata.blocks` 数组包含完整的图片块信息
+- 保留 `imageUrl` 相对路径
+- 保留 `imageCaption` 说明文字
+
+### 图片恢复流程
+
+#### 从 blocks 恢复（推荐）
+```typescript
+// App.tsx - loadRecord()
+if (data.metadata?.blocks && Array.isArray(data.metadata.blocks) && data.metadata.blocks.length > 0) {
+  // 直接使用 blocks，包含完整的图片块信息
+  setInitialBlocks(data.metadata.blocks);
+}
+```
+
+#### 从纯文本恢复（降级方案）
+```typescript
+// App.tsx - loadRecord()
+else {
+  // 解析 text 字段中的图片占位符
+  const textBlocks = data.text.split('\n')
+    .filter(line => line.trim())
+    .map((line, index) => {
+      // 检测图片占位符
+      const imageMatch = line.match(/^\[IMAGE: (.*?)\](.*)?$/);
+      if (imageMatch) {
+        return {
+          id: `block-restored-${timestamp}-${index}`,
+          type: 'image',
+          content: '',
+          imageUrl: imageMatch[1],
+          imageCaption: imageMatch[2]?.trim() || undefined,
+        };
+      }
+      return {
+        id: `block-restored-${timestamp}-${index}`,
+        type: 'paragraph',
+        content: line,
+        isAsrWriting: false,
+      };
+    });
+  
+  setInitialBlocks([noteInfoBlock, ...textBlocks]);
+}
+```
+
+#### 图片URL渲染
+```typescript
+// BlockEditor.tsx - 渲染图片块
+if (block.type === 'image') {
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
+  const imageUrl = block.imageUrl?.startsWith('http') 
+    ? block.imageUrl 
+    : `${API_BASE_URL}/api/${block.imageUrl}`;  // 拼接完整URL
+  
+  return <img src={imageUrl} alt={block.imageCaption || '图片'} />;
+}
+```
+
+### 图片文件管理
+
+#### 当前限制 ⚠️
+1. **孤儿文件**: 删除历史记录时，图片文件不会自动删除
+2. **文件累积**: 长期使用会导致 `data/images/` 目录体积增大
+3. **备份不完整**: 仅备份数据库不包含图片文件
+
+#### 手动清理
+```bash
+# 查看图片目录大小
+du -sh data/images/
+
+# 手动删除旧图片（慎用，可能导致历史记录中的图片失效）
+find data/images/ -type f -mtime +90 -delete
+```
+
+#### 未来改进方向
+1. **引用计数**: 在数据库中记录图片被引用次数
+2. **垃圾回收**: 定期清理未被引用的图片文件
+3. **完整备份**: 备份时同时打包图片文件
+4. **导出功能**: 导出为 ZIP（markdown + images）
+
+### 图片处理最佳实践
+
+#### ✅ 应该做的
+1. **保存时**: 在 text 字段添加图片占位符
+2. **恢复时**: 优先使用 blocks，降级到解析 text
+3. **渲染时**: 添加 onError 处理图片加载失败
+4. **删除时**: 考虑图片文件是否需要清理
+
+#### ❌ 不应该做的
+1. 不要在 text 字段中遗漏图片块
+2. 不要在 metadata 中存储 Base64（体积太大）
+3. 不要直接删除 `data/images/` 目录
+4. 不要在前端硬编码图片绝对路径
+
+### 图片API端点
+
+#### 上传图片
+- **端点**: `POST /api/images/save`
+- **请求**: `{ image_data: "data:image/png;base64,..." }`
+- **响应**: `{ success: true, image_url: "images/xxx.png" }`
+
+#### 获取图片
+- **端点**: `GET /api/images/{filename}`
+- **响应**: 图片文件（FileResponse）
+- **安全**: 防止路径遍历攻击（检查 `..`、`/`、`\`）
+
+### 图片相关错误处理
+
+#### 前端错误处理
+```typescript
+// 图片加载失败
+<img 
+  src={imageUrl}
+  onError={(e) => {
+    console.error('[BlockEditor] 图片加载失败:', imageUrl);
+    e.currentTarget.style.display = 'none';
+    // 显示错误提示
+  }}
+/>
+```
+
+#### 后端错误处理
+```python
+# 图片文件不存在
+if not image_path.exists():
+    raise HTTPException(status_code=404, detail="图片不存在")
+
+# 无效的文件名
+if '..' in filename or '/' in filename:
+    raise HTTPException(status_code=400, detail="无效的文件名")
 ```
 
 ## 错误处理规则

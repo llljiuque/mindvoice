@@ -18,6 +18,8 @@
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(10px);
   z-index: 10;
+  -webkit-app-region: drag; /* 允许拖拽窗口 */
+  cursor: move; /* 移动光标 */
 }
 
 .header-left {
@@ -41,6 +43,7 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* 标题区域继承 drag，允许拖拽窗口 */
 }
 
 .app-icon {
@@ -80,6 +83,7 @@
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  -webkit-app-region: no-drag; /* 状态区域保持交互 */
 }
 
 /* 功能按钮区域 */
@@ -88,6 +92,7 @@
   gap: 16px;
   align-items: center;
   flex-wrap: wrap;
+  -webkit-app-region: no-drag; /* 按钮区域保持可点击 */
 }
 
 /* ==================== 内容区域 ==================== */

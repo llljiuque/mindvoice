@@ -47,10 +47,12 @@ class VoiceService:
         use_user_config = (config_source == 'user')
         self._initialize_asr_provider(use_user_config=use_user_config)
         
+        # 新格式：使用 data_dir + database 相对路径
         storage_config = {
-            'path': self.config.get('storage.path', '~/.voice_assistant/history.db')
+            'data_dir': self.config.get('storage.data_dir', '~/Library/Application Support/MindVoice'),
+            'database': self.config.get('storage.database', 'database/history.db')
         }
-        logger.info(f"[语音服务] 初始化存储提供商: path={storage_config['path']}")
+        logger.info(f"[语音服务] 初始化存储提供商: data_dir={storage_config['data_dir']}, database={storage_config['database']}")
         self.storage_provider = SQLiteStorageProvider()
         self.storage_provider.initialize(storage_config)
         logger.info("[语音服务] 存储提供商初始化完成")

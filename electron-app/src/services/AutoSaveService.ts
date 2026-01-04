@@ -8,12 +8,12 @@
 export type AppType = 'voice-note' | 'voice-chat' | 'voice-zen';
 
 export type SaveTrigger = 
-  | 'definite_utterance'  // ASR 确认完整 utterance
-  | 'edit_complete'       // 用户编辑完成
-  | 'content_change'      // 内容变更
-  | 'summary'             // AI 小结生成完成
-  | 'manual'              // 用户手动保存
-  | 'periodic';           // 定期保存
+  | 'block_confirmed'
+  | 'edit_complete'
+  | 'view_switch'
+  | 'summary'
+  | 'manual'
+  | 'periodic';
 
 export interface VolatileData {
   appType: AppType;
@@ -74,9 +74,6 @@ export interface AutoSaveConfig {
   // 定期保存间隔
   periodicSaveInterval: number;
   
-  // 恢复时间限制
-  recoverTimeLimit: number;
-  
   // 临时数据优先时限
   volatileDataPriority: number;
 }
@@ -86,7 +83,6 @@ const DEFAULT_CONFIG: AutoSaveConfig = {
   dbSaveDebounce: 3000,              // 3秒
   longEditThreshold: 30000,          // 30秒
   periodicSaveInterval: 60000,       // 60秒
-  recoverTimeLimit: 3600000,         // 1小时
   volatileDataPriority: 300000,      // 5分钟
 };
 
@@ -108,15 +104,39 @@ export class AutoSaveService {
   
   private editingItemId: string | null = null;
   
+  // 回调：当 recordId 首次创建时通知外部
+  private onRecordIdCreated?: (recordId: string) => void;
+  
   constructor(
     appType: AppType,
     adapter: AppAdapter,
-    config?: Partial<AutoSaveConfig>
+    config?: Partial<AutoSaveConfig>,
+    callbacks?: {
+      onRecordIdCreated?: (recordId: string) => void;
+    }
   ) {
     this.appType = appType;
     this.adapter = adapter;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.currentSessionId = this.generateSessionId();
+    this.onRecordIdCreated = callbacks?.onRecordIdCreated;
+  }
+  
+  /**
+   * 通知外部 recordId 已创建
+   */
+  private notifyRecordIdCreated(recordId: string) {
+    if (this.onRecordIdCreated) {
+      this.onRecordIdCreated(recordId);
+    }
+  }
+  
+  /**
+   * 设置 recordId（用于从外部恢复）
+   */
+  setCurrentRecordId(recordId: string | null) {
+    console.log(`[AutoSave-${this.appType}] 设置 recordId:`, recordId);
+    this.currentRecordId = recordId;
   }
   
   /**
@@ -135,8 +155,9 @@ export class AutoSaveService {
   
   /**
    * 启动自动保存
+   * @param autoRecover 是否自动恢复（默认false，由外部控制恢复时机）
    */
-  start() {
+  start(autoRecover: boolean = false) {
     console.log(`[AutoSave-${this.appType}] 启动自动保存服务`);
     
     // 启动 localStorage 临时保存
@@ -145,8 +166,10 @@ export class AutoSaveService {
     // 启动定期保存
     this.startPeriodicSave();
     
-    // 尝试恢复
-    this.recover();
+    // 可选：自动恢复（通常由外部控制）
+    if (autoRecover) {
+      this.recover();
+    }
   }
   
   /**
@@ -231,14 +254,28 @@ export class AutoSaveService {
     trigger: SaveTrigger,
     immediate: boolean = false
   ): Promise<void> {
+    console.log(`[AutoSave-${this.appType}] 💾 saveToDatabase 调用`, {
+      trigger,
+      immediate,
+      currentRecordId: this.currentRecordId,
+      hasPendingTimer: !!this.dbSaveTimer,
+      timestamp: new Date().toLocaleTimeString(),
+    });
+
     const performSave = async () => {
+      const saveStartTime = Date.now();
+      console.log(`[AutoSave-${this.appType}] 🚀 开始执行保存`, {
+        trigger,
+        timestamp: new Date().toLocaleTimeString(),
+      });
+
       try {
         // 获取稳定数据
         const stableData = this.adapter.getStableData();
         
         // 检查是否有内容
         if (!this.adapter.hasContent(stableData)) {
-          console.log(`[AutoSave-${this.appType}] 没有内容可保存`);
+          console.log(`[AutoSave-${this.appType}] ⚠️  没有内容可保存`);
           return;
         }
         
@@ -253,10 +290,23 @@ export class AutoSaveService {
           sessionId: this.currentSessionId,
         };
         
-        console.log(`[AutoSave-${this.appType}] 保存到数据库:`, {
+        console.log(`[AutoSave-${this.appType}] 📝 准备保存:`, {
           trigger,
           textLength: saveData.text.length,
+          hasMetadata: !!saveData.metadata,
+          isUpdate: !!this.currentRecordId,
+          metadataKeys: Object.keys(saveData.metadata || {}),
         });
+        
+        console.log(`[AutoSave-${this.appType}] 🔍 stableData 检查:`, {
+          stableDataType: typeof stableData,
+          stableDataKeys: Object.keys(stableData || {}),
+          hasBlocks: !!(stableData as any)?.blocks,
+          blocksLength: (stableData as any)?.blocks?.length,
+          hasNoteInfo: !!(stableData as any)?.noteInfo,
+        });
+        
+        console.log(`[AutoSave-${this.appType}] 💾 saveData.metadata:`, JSON.stringify(saveData.metadata, null, 2));
         
         // 更新或创建记录
         if (this.currentRecordId) {
@@ -270,10 +320,24 @@ export class AutoSaveService {
             }
           );
           
+          const saveEndTime = Date.now();
+          const duration = saveEndTime - saveStartTime;
+
           if (response.ok) {
-            console.log(`[AutoSave-${this.appType}] 更新记录成功:`, this.currentRecordId);
+            console.log(`[AutoSave-${this.appType}] ✅ 更新记录成功`, {
+              recordId: this.currentRecordId,
+              duration: `${duration}ms`,
+              trigger,
+            });
+            this.resetPeriodicTimer();
           } else {
-            console.error(`[AutoSave-${this.appType}] 更新记录失败`);
+            const errorResult = await response.json().catch(() => ({}));
+            console.error(`[AutoSave-${this.appType}] ❌ 更新记录失败`, {
+              status: response.status,
+              message: errorResult.message,
+              error: errorResult.error,
+              duration: `${duration}ms`,
+            });
           }
         } else {
           // 创建新记录
@@ -283,28 +347,60 @@ export class AutoSaveService {
             body: JSON.stringify(saveData),
           });
           
+          const saveEndTime = Date.now();
+          const duration = saveEndTime - saveStartTime;
           const result = await response.json();
+
           if (result.success) {
-            console.log(`[AutoSave-${this.appType}] 创建记录成功:`, result.record_id);
+            console.log(`[AutoSave-${this.appType}] ✅ 创建记录成功`, {
+              recordId: result.record_id,
+              duration: `${duration}ms`,
+              trigger,
+            });
             this.currentRecordId = result.record_id;
+            this.resetPeriodicTimer();
+            
+            // 通知外部：记录ID已生成
+            this.notifyRecordIdCreated(result.record_id);
           } else {
-            console.error(`[AutoSave-${this.appType}] 创建记录失败`);
+            console.error(`[AutoSave-${this.appType}] ❌ 创建记录失败`, {
+              message: result.message,
+              error: result.error,
+              duration: `${duration}ms`,
+              saveData: {
+                textLength: saveData.text.length,
+                app_type: saveData.app_type,
+              },
+            });
           }
         }
         
       } catch (error) {
-        console.error(`[AutoSave-${this.appType}] 数据库保存失败:`, error);
+        const saveEndTime = Date.now();
+        const duration = saveEndTime - saveStartTime;
+        console.error(`[AutoSave-${this.appType}] ❌ 数据库保存异常`, {
+          error,
+          duration: `${duration}ms`,
+          trigger,
+        });
       }
     };
     
     // 立即保存或防抖保存
     if (immediate) {
+      console.log(`[AutoSave-${this.appType}] ⚡ 立即保存 (immediate=true)`);
       await performSave();
     } else {
       if (this.dbSaveTimer) {
+        console.log(`[AutoSave-${this.appType}] ⏱️  防抖：清除旧定时器，重新计时 ${this.config.dbSaveDebounce}ms`);
         clearTimeout(this.dbSaveTimer);
+      } else {
+        console.log(`[AutoSave-${this.appType}] ⏱️  防抖：启动定时器 ${this.config.dbSaveDebounce}ms`);
       }
-      this.dbSaveTimer = setTimeout(performSave, this.config.dbSaveDebounce);
+      this.dbSaveTimer = setTimeout(() => {
+        console.log(`[AutoSave-${this.appType}] ⏰ 防抖时间到，执行保存`);
+        performSave();
+      }, this.config.dbSaveDebounce);
     }
   }
   
@@ -315,10 +411,30 @@ export class AutoSaveService {
     this.periodicSaveTimer = setInterval(() => {
       const stableData = this.adapter.getStableData();
       if (this.adapter.hasContent(stableData)) {
-        console.log(`[AutoSave-${this.appType}] 定期保存触发`);
+        console.log(`[AutoSave-${this.appType}] 定期保存触发（60秒）`);
         this.saveToDatabase('periodic', false);
       }
     }, this.config.periodicSaveInterval);
+  }
+  
+  /**
+   * 重置定期保存计时器
+   * 在任何保存成功后调用，确保定期保存从上次保存点开始倒计时
+   */
+  private resetPeriodicTimer() {
+    if (this.periodicSaveTimer) {
+      clearInterval(this.periodicSaveTimer);
+    }
+    
+    this.periodicSaveTimer = setInterval(() => {
+      const stableData = this.adapter.getStableData();
+      if (this.adapter.hasContent(stableData)) {
+        console.log(`[AutoSave-${this.appType}] 定期保存触发（60秒，从上次保存重置）`);
+        this.saveToDatabase('periodic', false);
+      }
+    }, this.config.periodicSaveInterval);
+    
+    console.log(`[AutoSave-${this.appType}] ⏲️  定期保存计时器已重置（60秒）`);
   }
   
   /**
@@ -343,42 +459,29 @@ export class AutoSaveService {
   }
   
   /**
-   * 从数据库恢复
+   * 从数据库恢复指定记录
+   * @param recordId 要恢复的记录ID（必需参数）
    */
-  async recover(): Promise<any | null> {
+  async recover(recordId: string): Promise<any | null> {
     try {
-      // 1. 获取最近的记录
-      const response = await fetch(
-        `http://127.0.0.1:8765/api/records?limit=1&app_type=${this.appType}`
-      );
+      console.log(`[AutoSave-${this.appType}] 恢复指定记录:`, recordId);
+      
+      // 直接获取指定记录（不限时间）
+      const response = await fetch(`http://127.0.0.1:8765/api/records/${recordId}`);
       
       if (!response.ok) {
-        console.log(`[AutoSave-${this.appType}] 未找到历史记录`);
+        console.warn(`[AutoSave-${this.appType}] 记录不存在:`, recordId);
         return null;
       }
       
-      const data = await response.json();
-      if (!data.success || !data.records || data.records.length === 0) {
-        console.log(`[AutoSave-${this.appType}] 没有可恢复的记录`);
-        return null;
-      }
+      const record = await response.json();
       
-      const latestRecord = data.records[0];
-      
-      // 2. 检查记录时间
-      const recordTime = new Date(latestRecord.created_at).getTime();
-      const now = Date.now();
-      
-      if (now - recordTime > this.config.recoverTimeLimit) {
-        console.log(`[AutoSave-${this.appType}] 记录过期，不自动恢复`);
-        return null;
-      }
-      
-      // 3. 检查 localStorage 临时数据
+      // 检查 localStorage 临时数据（可能有未保存的编辑）
       const volatileDataStr = localStorage.getItem(this.getLocalStorageKey());
       if (volatileDataStr) {
         const volatileData: VolatileData = JSON.parse(volatileDataStr);
-        const volatileAge = now - volatileData.timestamp;
+        const volatileAge = Date.now() - volatileData.timestamp;
+        const recordTime = new Date(record.created_at).getTime();
         
         // 如果临时数据更新且在5分钟内，优先使用临时数据
         if (
@@ -386,15 +489,16 @@ export class AutoSaveService {
           volatileData.timestamp > recordTime
         ) {
           console.log(`[AutoSave-${this.appType}] 使用更新的临时数据`);
+          this.currentRecordId = recordId;
           return volatileData.data;
         }
       }
       
-      // 4. 恢复数据库记录
-      console.log(`[AutoSave-${this.appType}] 从数据库恢复:`, latestRecord.id);
-      this.currentRecordId = latestRecord.id;
+      // 恢复数据库记录
+      console.log(`[AutoSave-${this.appType}] 从数据库恢复:`, record.id);
+      this.currentRecordId = record.id;
       
-      return latestRecord.metadata;
+      return record.metadata;
       
     } catch (e) {
       console.error(`[AutoSave-${this.appType}] 恢复失败:`, e);

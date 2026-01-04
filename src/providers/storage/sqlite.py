@@ -1,5 +1,7 @@
 """
-SQLite 存储提供商实现示例
+SQLite 存储提供商
+
+提供基于 SQLite 的持久化存储服务，支持多应用类型的记录管理。
 """
 import sqlite3
 import json
@@ -11,51 +13,59 @@ from .base_storage import BaseStorageProvider
 
 
 class SQLiteStorageProvider(BaseStorageProvider):
-    """SQLite 存储提供商"""
+    """SQLite 存储提供商
+    
+    特性：
+    - 支持多应用类型（voice-note, voice-chat, voice-zen）
+    - 本地时间戳（非 UTC）
+    - JSON 元数据存储
+    """
     
     PROVIDER_NAME = "sqlite"
     
     def initialize(self, config: Dict[str, Any]) -> bool:
-        """初始化 SQLite 存储"""
+        """初始化存储提供商
+        
+        Args:
+            config: 配置字典，包含：
+                - data_dir: 数据根目录
+                - database: 数据库文件相对路径
+        
+        Returns:
+            初始化是否成功
+        """
         super().initialize(config)
         
-        db_path = config.get('path', 'history.db')
-        # 展开用户目录路径（~）
-        self.db_path = Path(db_path).expanduser()
+        # 读取配置
+        data_dir = Path(config['data_dir']).expanduser()
+        db_relative_path = config['database']
+        self.db_path = data_dir / db_relative_path
+        
+        # 确保目录存在
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 创建表
         self._create_table()
         return True
     
     def _create_table(self):
-        """创建数据表"""
+        """初始化数据表结构"""
         import logging
         logger = logging.getLogger(__name__)
         
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS records (
                 id TEXT PRIMARY KEY,
                 text TEXT NOT NULL,
                 metadata TEXT,
-                app_type TEXT DEFAULT 'voice-note',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                app_type TEXT NOT NULL DEFAULT 'voice-note',
+                created_at TIMESTAMP NOT NULL
             )
         ''')
-        logger.info(f"[Storage] 数据表初始化完成: {self.db_path}")
         
-        # 检查是否需要迁移：为旧记录添加app_type字段
-        cursor.execute("PRAGMA table_info(records)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'app_type' not in columns:
-            logger.info("[Storage] 检测到旧表结构，开始迁移：添加 app_type 字段")
-            cursor.execute('ALTER TABLE records ADD COLUMN app_type TEXT DEFAULT "voice-note"')
-            logger.info("[Storage] 数据库迁移完成：app_type 字段已添加")
-        else:
-            logger.info("[Storage] 表结构检查完成，app_type 字段已存在")
-        
+        logger.info(f"[Storage] 数据表已初始化: {self.db_path}")
         conn.commit()
         conn.close()
     
@@ -64,14 +74,21 @@ class SQLiteStorageProvider(BaseStorageProvider):
         return sqlite3.connect(str(self.db_path))
     
     def save_record(self, text: str, metadata: Dict[str, Any]) -> str:
-        """保存记录"""
+        """创建新记录
+        
+        Args:
+            text: 文本内容
+            metadata: 元数据，必须包含 'app_type' 字段
+        
+        Returns:
+            记录 ID (UUID)
+        """
         import uuid
+        import logging
+        logger = logging.getLogger(__name__)
+        
         record_id = str(uuid.uuid4())
-        
-        # 从metadata中提取app_type，默认为'voice-note'
         app_type = metadata.get('app_type', 'voice-note')
-        
-        # 使用本地时间而非UTC时间
         created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         conn = self._get_connection()
@@ -83,10 +100,23 @@ class SQLiteStorageProvider(BaseStorageProvider):
         conn.commit()
         conn.close()
         
+        logger.debug(f"[Storage] 记录已创建: id={record_id}, app_type={app_type}")
         return record_id
     
     def update_record(self, record_id: str, text: str, metadata: Dict[str, Any]) -> bool:
-        """更新记录（用于增量保存）"""
+        """更新已有记录
+        
+        Args:
+            record_id: 记录 ID
+            text: 更新的文本内容
+            metadata: 更新的元数据
+        
+        Returns:
+            更新是否成功
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -98,10 +128,18 @@ class SQLiteStorageProvider(BaseStorageProvider):
         conn.commit()
         conn.close()
         
+        logger.debug(f"[Storage] 记录已更新: id={record_id}, success={success}")
         return success
     
     def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
-        """获取记录"""
+        """获取单条记录
+        
+        Args:
+            record_id: 记录 ID
+        
+        Returns:
+            记录数据字典，不存在则返回 None
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -124,12 +162,15 @@ class SQLiteStorageProvider(BaseStorageProvider):
         return None
     
     def list_records(self, limit: int = 100, offset: int = 0, app_type: Optional[str] = None) -> list[Dict[str, Any]]:
-        """列出记录
+        """查询记录列表
         
         Args:
-            limit: 返回记录数量限制
-            offset: 偏移量
+            limit: 返回数量限制
+            offset: 偏移量（用于分页）
             app_type: 应用类型筛选（可选）
+        
+        Returns:
+            记录列表，按创建时间倒序
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -165,7 +206,14 @@ class SQLiteStorageProvider(BaseStorageProvider):
         ]
     
     def delete_record(self, record_id: str) -> bool:
-        """删除记录"""
+        """删除单条记录
+        
+        Args:
+            record_id: 记录 ID
+        
+        Returns:
+            删除是否成功
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM records WHERE id = ?', (record_id,))
@@ -176,10 +224,13 @@ class SQLiteStorageProvider(BaseStorageProvider):
         return success
     
     def count_records(self, app_type: Optional[str] = None) -> int:
-        """获取记录总数
+        """统计记录总数
         
         Args:
             app_type: 应用类型筛选（可选）
+        
+        Returns:
+            记录总数
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -198,8 +249,8 @@ class SQLiteStorageProvider(BaseStorageProvider):
         """批量删除记录
         
         Args:
-            record_ids: 记录ID列表
-            
+            record_ids: 记录 ID 列表
+        
         Returns:
             成功删除的记录数
         """

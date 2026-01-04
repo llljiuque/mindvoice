@@ -24,7 +24,32 @@ llm:
 
 # 存储配置
 storage:
-  path: ~/.voice_assistant/history.db  # 数据库路径
+  # 数据根目录（支持 ~ 展开为用户主目录）
+  # 
+  # 推荐的跨平台路径：
+  # - macOS:   ~/Library/Application Support/MindVoice
+  # - Linux:   ~/.local/share/MindVoice
+  # - Windows: %APPDATA%\MindVoice  (通常是 C:\Users\用户名\AppData\Roaming\MindVoice)
+  # - iOS:     ~/Documents/MindVoice
+  # - Android: /data/data/com.mindvoice.app/files/MindVoice
+  # 
+  # 简单方案（桌面平台通用）：
+  # - data_dir: ~/MindVoice  (在用户主目录下创建 MindVoice 文件夹)
+  #
+  # 当前默认为 macOS 路径，其他平台请根据上述推荐修改
+  # 或使用 scripts/init_config.py 自动生成适合当前平台的配置
+  data_dir: ~/Library/Application Support/MindVoice
+  
+  database: database/history.db    # 数据库文件路径（相对于 data_dir）
+  images: images                   # 图片存储目录（相对于 data_dir）
+  knowledge: knowledge             # 知识库存储目录（相对于 data_dir）
+  backups: backups                 # 备份文件目录（相对于 data_dir）
+  
+  # 最终的完整路径示例：
+  # - 数据库: {data_dir}/database/history.db
+  # - 图片: {data_dir}/images/*.png
+  # - 知识库: {data_dir}/knowledge/chroma/
+  # - 备份: {data_dir}/backups/*.db.backup
 
 # 音频配置
 audio:

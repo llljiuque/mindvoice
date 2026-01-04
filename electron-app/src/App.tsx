@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Sidebar, AppView } from './components/shared/Sidebar';
 import { VoiceNote } from './components/apps/VoiceNote/VoiceNote';
-import { VoiceChat } from './components/apps/VoiceChat/VoiceChat';
+import { SmartChat } from './components/apps/SmartChat/SmartChat';
 import VoiceZen from './components/apps/VoiceZen/VoiceZen';
 import { HistoryView } from './components/shared/HistoryView';
 import { SettingsView } from './components/shared/SettingsView';
@@ -27,7 +27,6 @@ interface Record {
 function App() {
   const [asrState, setAsrState] = useState<RecordingState>('idle');
   const [text, setText] = useState('');
-  const [error, setError] = useState<string | null>(null);
   const [systemError, setSystemError] = useState<SystemErrorInfo | null>(null);
   const [apiConnected, setApiConnected] = useState(false);
   const [activeView, setActiveView] = useState<AppView>('voice-note');
@@ -35,15 +34,32 @@ function App() {
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [recordsTotal, setRecordsTotal] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
-  const [appFilter, setAppFilter] = useState<'all' | 'voice-note' | 'voice-chat' | 'voice-zen'>('all');
+  const [appFilter, setAppFilter] = useState<'all' | 'voice-note' | 'smart-chat' | 'voice-zen'>('all');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning'; duration?: number } | null>(null);
   
-  // 工作状态管理（保留用于追踪，但不再用于限制切换）
+  // 工作状态管理
   const [activeWorkingApp, setActiveWorkingApp] = useState<AppView | null>(null);
   const [isWorkSessionActive, setIsWorkSessionActive] = useState(false);
   
-  // VoiceChat 和 VoiceZen 的工作状态（通过回调更新）
-  const [voiceChatHasContent, setVoiceChatHasContent] = useState(false);
+  // 核心：当前正在工作的任务ID
+  // null = 没有正在进行的任务（idle）
+  // string = 有正在进行的任务（working/paused）
+  const [currentWorkingRecordId, setCurrentWorkingRecordId] = useState<string | null>(null);
+  
+  // 工作会话状态
+  type WorkSessionState = 'idle' | 'working' | 'paused';
+  const [workSessionState, setWorkSessionState] = useState<WorkSessionState>('idle');
+  
+  // 综合判断：是否真正在工作
+  // 考虑因素：工作状态 + ASR状态 + 任务ID
+  const isReallyWorking = 
+    workSessionState === 'working' || 
+    asrState === 'recording' || 
+    asrState === 'stopping' ||
+    currentWorkingRecordId !== null;
+  
+  // SmartChat 和 VoiceZen 的工作状态（通过回调更新）
+  const [smartChatHasContent, setSmartChatHasContent] = useState(false);
   const [voiceZenHasContent, setVoiceZenHasContent] = useState(false);
   
   const [initialBlocks, setInitialBlocks] = useState<any[] | undefined>(undefined);
@@ -78,7 +94,12 @@ function App() {
   
   // 创建 VoiceNote 自动保存服务
   const voiceNoteAutoSave = useMemo(() => {
-    return new AutoSaveService('voice-note', voiceNoteAdapter);
+    return new AutoSaveService('voice-note', voiceNoteAdapter, undefined, {
+      onRecordIdCreated: (recordId) => {
+        console.log('[App] AutoSave 创建了新记录:', recordId);
+        setCurrentWorkingRecordId(recordId);
+      }
+    });
   }, [voiceNoteAdapter]);
   
   // 同步编辑状态到适配器
@@ -86,19 +107,86 @@ function App() {
     voiceNoteAdapter.setEditingBlockId(editingBlockId);
     voiceNoteAutoSave.setEditingItemId(editingBlockId);
   }, [editingBlockId, voiceNoteAdapter, voiceNoteAutoSave]);
+  
+  // 状态持久化：保存 currentWorkingRecordId 和 workSessionState 到 localStorage
+  useEffect(() => {
+    if (currentWorkingRecordId) {
+      localStorage.setItem('currentWorkingRecordId', currentWorkingRecordId);
+      localStorage.setItem('workSessionState', workSessionState);
+      console.log('[状态持久化] 保存状态:', { currentWorkingRecordId, workSessionState });
+    } else {
+      localStorage.removeItem('currentWorkingRecordId');
+      localStorage.removeItem('workSessionState');
+      console.log('[状态持久化] 清空状态');
+    }
+  }, [currentWorkingRecordId, workSessionState]);
+  
+  // 应用启动时恢复状态
+  useEffect(() => {
+    const savedRecordId = localStorage.getItem('currentWorkingRecordId');
+    const savedState = localStorage.getItem('workSessionState') as WorkSessionState | null;
+    
+    if (savedRecordId && savedState === 'paused') {
+      console.log('[应用启动] 检测到未完成的任务:', savedRecordId);
+      
+      // 自动设置状态（用户返回语音笔记时会触发恢复）
+      setCurrentWorkingRecordId(savedRecordId);
+      setWorkSessionState('paused');
+      voiceNoteAutoSave.setCurrentRecordId(savedRecordId);
+      
+      // 提示用户
+      setTimeout(() => {
+        setToast({ 
+          message: '检测到未完成的笔记，返回语音笔记将自动恢复', 
+          type: 'info',
+          duration: 5000
+        });
+      }, 1000);
+    } else {
+      console.log('[应用启动] 没有需要恢复的任务');
+    }
+  }, []);  // 只在组件挂载时执行一次
 
   // 开始工作会话
-  const startWorkSession = (app: AppView): boolean => {
-    // 允许多个app同时工作，不再进行互斥检查
+  const startWorkSession = (app: AppView, recordId?: string): boolean => {
+    console.log('[状态] 开始工作会话', { app, recordId, currentWorkingRecordId });
+    
     setActiveWorkingApp(app);
     setIsWorkSessionActive(true);
+    
+    if (app === 'voice-note') {
+      // 如果提供了 recordId，说明是恢复任务
+      if (recordId) {
+        setCurrentWorkingRecordId(recordId);
+      }
+      setWorkSessionState('working');
+    }
+    
     return true;
   };
 
-  // 结束工作会话（内部函数，不直接调用）
+  // 暂停工作会话（切换视图时调用）
+  const pauseWorkSession = () => {
+    console.log('[状态] 暂停工作会话', { currentWorkingRecordId });
+    
+    if (activeView === 'voice-note' && currentWorkingRecordId) {
+      // 切换到 paused 状态，保留 recordId
+      setWorkSessionState('paused');
+      // 不清空 isWorkSessionActive，以便返回时恢复
+    }
+  };
+
+  // 结束工作会话（EXIT时调用）
   const endWorkSession = () => {
+    console.log('[状态] 结束工作会话', { currentWorkingRecordId });
+    
     setActiveWorkingApp(null);
     setIsWorkSessionActive(false);
+    setWorkSessionState('idle');
+    
+    // 清空当前工作ID（关键！）
+    setCurrentWorkingRecordId(null);
+    
     // 清空 blocks 和重置 AutoSave
     setInitialBlocks(undefined);
     setText('');
@@ -109,11 +197,25 @@ function App() {
 
   // EXIT退出：保存后退出（显示欢迎界面，开始全新记录）
   const exitWithSave = async () => {
+    console.log('[EXIT] 准备退出', { 
+      asrState, 
+      currentWorkingRecordId, 
+      workSessionState,
+      isReallyWorking 
+    });
+    
     if (!apiConnected) {
-      setError('API未连接');
+      setSystemError({
+        code: ErrorCodes.API_SERVER_UNAVAILABLE,
+        category: ErrorCategory.NETWORK,
+        message: 'API未连接',
+        user_message: 'API服务器未连接',
+        suggestion: '请确认后端服务已启动'
+      });
       return;
     }
 
+    // 必须先停止ASR
     if (asrState !== 'idle') {
       setToast({ message: '请先停止ASR后再退出', type: 'info' });
       return;
@@ -236,11 +338,20 @@ function App() {
   };
 
   // 应用切换处理
-  const handleViewChange = (newView: AppView) => {
+  const handleViewChange = async (newView: AppView) => {
+    console.log('[导航] 切换视图', { 
+      from: activeView, 
+      to: newView, 
+      asrState, 
+      currentWorkingRecordId,
+      workSessionState,
+      isReallyWorking
+    });
+    
     // 如果 ASR 正在录音，阻止切换
     if (asrState === 'recording') {
       const ownerName = asrOwner === 'voice-note' ? '语音笔记' : 
-                        asrOwner === 'voice-chat' ? '语音助手' : 
+                        asrOwner === 'smart-chat' ? '智能助手' : 
                         asrOwner === 'voice-zen' ? '禅' : '当前应用';
       
       setToast({ 
@@ -252,7 +363,70 @@ function App() {
       return;
     }
     
-    // 允许切换
+    // 离开 voice-note 时
+    if (activeView === 'voice-note' && newView !== 'voice-note') {
+      if (isWorkSessionActive && currentWorkingRecordId) {
+        console.log('[导航] 离开语音笔记，保存并暂停工作会话');
+        // 立即保存
+        await voiceNoteAutoSave.saveToDatabase('view_switch', true);
+        // 暂停工作会话（保留 recordId）
+        pauseWorkSession();
+      }
+    }
+    
+    // 返回 voice-note 时
+    if (activeView !== 'voice-note' && newView === 'voice-note') {
+      console.log('[导航] 返回语音笔记', { 
+        workSessionState, 
+        currentWorkingRecordId 
+      });
+      
+      // 先切换视图
+      setActiveView(newView);
+      
+      // 如果有暂停的任务，自动恢复
+      if (workSessionState === 'paused' && currentWorkingRecordId) {
+        console.log('[导航] 恢复暂停的任务', currentWorkingRecordId);
+        
+        setTimeout(async () => {
+          try {
+            // 恢复工作会话
+            startWorkSession('voice-note', currentWorkingRecordId);
+            
+            // 使用 AutoSave 恢复数据
+            const recoveredData = await voiceNoteAutoSave.recover(currentWorkingRecordId);
+            
+            if (recoveredData && recoveredData.blocks) {
+              setInitialBlocks(recoveredData.blocks);
+              
+              // 提取文本
+              const textContent = recoveredData.blocks
+                .filter((b: any) => b.type !== 'note-info' && !b.isBufferBlock)
+                .map((b: any) => b.content)
+                .filter((text: string) => text.trim())
+                .join('\n');
+              setText(textContent);
+              
+              setToast({ 
+                message: '已恢复工作现场', 
+                type: 'info',
+                duration: 2000
+              });
+            }
+          } catch (e) {
+            console.error('[导航] 恢复失败:', e);
+          }
+        }, 100);
+        return;
+      }
+      
+      // 否则，显示欢迎界面（没有正在进行的任务）
+      console.log('[导航] 没有正在进行的任务，显示欢迎界面');
+      // 不需要额外操作，VoiceNote 组件会根据状态显示欢迎界面
+      return;
+    }
+    
+    // 其他情况，直接切换
     setActiveView(newView);
   };
 
@@ -420,7 +594,7 @@ function App() {
             if (activeView === 'voice-note' && blockEditorRef.current) {
               blockEditorRef.current.appendAsrText(data.text || '', false);
             }
-            // TODO: 为 voice-chat 和 voice-zen 添加类似的处理
+            // TODO: 为 smart-chat 和 voice-zen 添加类似的处理
             break;
           case 'text_final':
             // 确定的结果（完整utterance）- 包含时间信息
@@ -434,7 +608,7 @@ function App() {
                 }
               );
             }
-            // TODO: 为 voice-chat 和 voice-zen 添加类似的处理
+            // TODO: 为 smart-chat 和 voice-zen 添加类似的处理
             break;
           case 'state_change':
             setAsrState(data.state);
@@ -449,12 +623,18 @@ function App() {
             setAsrState(data.state);
             break;
           case 'error':
-            // 如果后端返回了完整的 SystemErrorInfo 对象
+            // 后端必须返回完整的 SystemErrorInfo 对象
             if (data.error && typeof data.error === 'object' && data.error.code) {
               setSystemError(data.error);
             } else {
-              // 兼容旧格式，创建一个简单的错误对象
-              setError(`${data.error_type || '错误'}: ${data.message || '未知错误'}`);
+              console.error('[IPC] 收到不完整的错误信息:', data);
+              setSystemError({
+                code: ErrorCodes.UNKNOWN_ERROR,
+                category: ErrorCategory.SYSTEM,
+                message: '未知错误',
+                user_message: data.message || '发生未知错误',
+                suggestion: '请查看控制台日志'
+              });
             }
             break;
           default:
@@ -496,7 +676,7 @@ function App() {
       const response = await fetch(`${API_BASE_URL}${endpoint}`, { method: 'POST' });
       const data = await response.json();
       if (!data.success) {
-        // 如果后端返回了完整的 SystemErrorInfo 对象
+        // 后端必须返回完整的 SystemErrorInfo 对象
         if (data.error && typeof data.error === 'object' && data.error.code) {
           // 音频设备错误使用 Toast 显示（不阻塞界面）
           if (data.error.code >= 2000 && data.error.code < 3000) {
@@ -507,13 +687,14 @@ function App() {
             setSystemError(data.error);
           }
         } else {
-          // 兼容旧格式
-          const errorMsg = data.message || '操作失败';
-          if (errorMsg.includes('音频设备') || errorMsg.includes('PortAudio') || errorMsg.includes('单声道')) {
-            setToast({ message: errorMsg, type: 'error', duration: 6000 });
-          } else {
-            setError(errorMsg);
-          }
+          console.error('[callAsrApi] 收到不完整的错误信息:', data);
+          setSystemError({
+            code: ErrorCodes.ASR_SERVICE_ERROR,
+            category: ErrorCategory.ASR,
+            message: '操作失败',
+            user_message: data.message || '操作失败',
+            suggestion: '请重试，如问题持续请查看日志'
+          });
         }
         return false;
       }
@@ -533,17 +714,23 @@ function App() {
 
   const startAsr = async (requestingApp?: AppView) => {
     if (!apiConnected) {
-      setError('API未连接');
+      setSystemError({
+        code: ErrorCodes.API_SERVER_UNAVAILABLE,
+        category: ErrorCategory.NETWORK,
+        message: 'API未连接',
+        user_message: 'API服务器未连接',
+        suggestion: '请确认后端服务已启动'
+      });
       return false;
     }
     
     // ASR 互斥访问控制：检查是否有其他 app 正在使用 ASR
     if (asrOwner && requestingApp && asrOwner !== requestingApp) {
       const ownerName = asrOwner === 'voice-note' ? '语音笔记' : 
-                        asrOwner === 'voice-chat' ? '语音助手' : 
+                        asrOwner === 'smart-chat' ? '智能助手' : 
                         asrOwner === 'voice-zen' ? '禅' : asrOwner;
       const requesterName = requestingApp === 'voice-note' ? '语音笔记' : 
-                           requestingApp === 'voice-chat' ? '语音助手' : 
+                           requestingApp === 'smart-chat' ? '智能助手' : 
                            requestingApp === 'voice-zen' ? '禅' : requestingApp;
       
       setToast({ 
@@ -682,7 +869,13 @@ function App() {
   // 保存文本（仅在idle状态时可用）
   const saveText = async (noteInfo?: any) => {
     if (!apiConnected) {
-      setError('API未连接');
+      setSystemError({
+        code: ErrorCodes.API_SERVER_UNAVAILABLE,
+        category: ErrorCategory.NETWORK,
+        message: 'API未连接',
+        user_message: 'API服务器未连接',
+        suggestion: '请确认后端服务已启动'
+      });
       return;
     }
 
@@ -698,7 +891,7 @@ function App() {
 
     try {
       // 根据当前活动视图确定应用类型
-      const appType = activeView === 'voice-chat' ? 'voice-chat' : 'voice-note';
+      const appType = activeView === 'smart-chat' ? 'smart-chat' : 'voice-note';
       
       // 构建保存的文本内容（如果有noteInfo，则在前面添加）
       let contentToSave = text.trim();
@@ -736,7 +929,18 @@ function App() {
         // 保存成功后，不清空内容，让用户可以继续编辑或查看
         // 注意：不调用 endWorkSession()，让用户可以继续使用
       } else {
-        setError(data.message || '保存失败');
+        // 使用 SystemErrorInfo
+        if (data.error && data.error.code) {
+          setSystemError(data.error);
+        } else {
+          setSystemError({
+            code: ErrorCodes.STORAGE_WRITE_FAILED,
+            category: ErrorCategory.STORAGE,
+            message: '保存失败',
+            user_message: data.message || '保存失败',
+            suggestion: '请重试保存操作'
+          });
+        }
       }
     } catch (e) {
       setToast({ message: '保存失败，请重试', type: 'error' });
@@ -757,100 +961,67 @@ function App() {
   };
 
   const createNewNote = async () => {
-    // 如果当前有内容，先保存
-    if (text && text.trim()) {
-      if (!apiConnected) {
-        setError('API未连接');
-        return;
+    console.log('[创建新笔记]', { 
+      currentWorkingRecordId, 
+      hasContent: !!text?.trim() 
+    });
+    
+    if (!apiConnected) {
+      setSystemError({
+        code: ErrorCodes.API_SERVER_UNAVAILABLE,
+        category: ErrorCategory.NETWORK,
+        message: 'API未连接',
+        user_message: 'API服务器未连接',
+        suggestion: '请确认后端服务已启动'
+      });
+      return;
+    }
+    
+    if (asrState !== 'idle') {
+      setToast({ message: '请先停止ASR后再创建新笔记', type: 'info' });
+      return;
+    }
+    
+    try {
+      // 如果有当前任务且有内容，先保存
+      if (currentWorkingRecordId && text && text.trim()) {
+        console.log('[创建新笔记] 保存当前笔记', currentWorkingRecordId);
+        await voiceNoteAutoSave.saveToDatabase('manual', true);
+        setToast({ message: '当前笔记已保存', type: 'success' });
       }
       
-      if (asrState !== 'idle') {
-        setToast({ message: '请先停止ASR后再创建新笔记', type: 'info' });
-        return;
-      }
-      
-      try {
-        // 获取笔记信息
-        const noteInfo = blockEditorRef.current?.getNoteInfo?.();
-        
-        // 先设置结束时间并获取返回的 endTime
-        let endTime: string | undefined;
-        if (blockEditorRef.current?.setNoteInfoEndTime) {
-          endTime = blockEditorRef.current.setNoteInfoEndTime();
-          // 手动设置 endTime（避免状态更新延迟）
-          if (noteInfo) {
-            noteInfo.endTime = endTime;
-          }
-        }
-        
-        // 构建保存内容
-        let contentToSave = text.trim();
-        if (noteInfo) {
-          const infoHeader = [
-            `📋 笔记信息`,
-            noteInfo.title ? `📌 标题: ${noteInfo.title}` : '',
-            noteInfo.type ? `🏷️ 类型: ${noteInfo.type}` : '',
-            noteInfo.relatedPeople ? `👥 相关人员: ${noteInfo.relatedPeople}` : '',
-            noteInfo.location ? `📍 地点: ${noteInfo.location}` : '',
-            `⏰ 开始时间: ${noteInfo.startTime}`,
-            noteInfo.endTime ? `⏱️ 结束时间: ${noteInfo.endTime}` : '',
-            '',
-            '---',
-            '',
-          ].filter(line => line).join('\n');
-          
-          contentToSave = infoHeader + contentToSave;
-        }
-        
-        // 保存当前笔记
-        const response = await fetch(`${API_BASE_URL}/api/text/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            text: contentToSave,
-            app_type: 'voice-note'
-          }),
-        });
-        
-        const data = await response.json();
-        if (data.success) {
-          // 清空内容并清除草稿
-          setText('');
-          setInitialBlocks([]); // 清空 initialBlocks，触发 BlockEditor 重新初始化
-          localStorage.removeItem('voiceNoteDraft');
-          setToast({ message: '当前笔记已保存，可以开始新笔记了', type: 'success' });
-          // 保持工作会话活跃，用户可以继续记录
-        } else {
-          // 使用 SystemErrorInfo
-          if (data.error && data.error.code) {
-            setSystemError(data.error);
-          } else {
-            setError(data.message || '保存失败');
-          }
-        }
-      } catch (e) {
-        setSystemError({
-          code: ErrorCodes.NETWORK_TIMEOUT,
-          category: ErrorCategory.NETWORK,
-          message: '网络错误',
-          user_message: '保存失败，请检查网络连接',
-          suggestion: '1. 检查网络连接\n2. 重试保存操作\n3. 确认后端服务运行正常',
-          technical_info: String(e)
-        });
-      }
-    } else {
-      // 如果没有内容，直接清空
+      // 清空状态，开始全新任务
+      console.log('[创建新笔记] 重置状态');
+      setCurrentWorkingRecordId(null);
+      voiceNoteAutoSave.reset();
+      voiceNoteAutoSave.setCurrentRecordId(null);
+      setInitialBlocks(undefined);
       setText('');
-      setInitialBlocks([]); // 清空 initialBlocks，触发 BlockEditor 重新初始化
       localStorage.removeItem('voiceNoteDraft');
-      setToast({ message: '准备好记录新笔记了', type: 'info' });
+      
+      // 保持工作会话（用户可以直接开始输入）
+      setWorkSessionState('working');
+      setIsWorkSessionActive(true);
+      
+      setToast({ message: '已开始新笔记，可以开始记录了', type: 'success' });
+      
+    } catch (e) {
+      console.error('[创建新笔记] 失败:', e);
+      setSystemError({
+        code: ErrorCodes.STORAGE_WRITE_FAILED,
+        category: ErrorCategory.STORAGE,
+        message: '保存失败',
+        user_message: '保存当前笔记失败',
+        suggestion: '请重试',
+        technical_info: String(e)
+      });
     }
   };
 
   // 历史记录
   const RECORDS_PER_PAGE = 20;
   
-  const loadRecords = async (page: number = currentPage, filter: 'all' | 'voice-note' | 'voice-chat' | 'voice-zen' = appFilter) => {
+  const loadRecords = async (page: number = currentPage, filter: 'all' | 'voice-note' | 'smart-chat' | 'voice-zen' = appFilter) => {
     if (!apiConnected) return;
     setLoadingRecords(true);
     try {
@@ -868,7 +1039,13 @@ function App() {
         if (data.error && data.error.code) {
           setSystemError(data.error);
         } else {
-          setError('加载历史记录失败');
+          setSystemError({
+            code: ErrorCodes.STORAGE_READ_FAILED,
+            category: ErrorCategory.STORAGE,
+            message: '加载失败',
+            user_message: '加载历史记录失败',
+            suggestion: '请刷新页面重试'
+          });
         }
       }
     } catch (e) {
@@ -903,7 +1080,13 @@ function App() {
         if (data.error && data.error.code) {
           setSystemError(data.error);
         } else {
-          setError(data.message || '删除记录失败');
+          setSystemError({
+            code: ErrorCodes.STORAGE_WRITE_FAILED,
+            category: ErrorCategory.STORAGE,
+            message: '删除失败',
+            user_message: data.message || '删除记录失败',
+            suggestion: '请重试删除操作'
+          });
         }
       }
     } catch (e) {
@@ -919,84 +1102,50 @@ function App() {
   };
 
   const loadRecord = async (recordId: string) => {
-    console.log('[App] 开始恢复任务, recordId:', recordId);
+    console.log('[历史记录] 恢复记录:', recordId);
     
     if (!apiConnected) {
-      console.warn('[App] API未连接，无法恢复任务');
+      console.warn('[历史记录] API未连接，无法恢复任务');
       setToast({ message: 'API未连接，无法恢复任务', type: 'error' });
       return;
     }
     
     try {
-      console.log('[App] 发送请求到:', `${API_BASE_URL}/api/records/${recordId}`);
-      const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
+      // 使用 AutoSave 恢复
+      const recoveredData = await voiceNoteAutoSave.recover(recordId);
       
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log('[App] 收到响应数据:', {
-        hasText: !!data.text,
-        textLength: data.text?.length,
-        hasMetadata: !!data.metadata,
-        hasBlocks: !!data.metadata?.blocks,
-        blocksCount: data.metadata?.blocks?.length,
-        appType: data.app_type
-      });
-      
-      if (data.text) {
-        setText(data.text);
-        console.log('[App] 设置文本内容, 长度:', data.text.length);
+      if (recoveredData && recoveredData.blocks) {
+        console.log('[历史记录] 恢复成功', {
+          blocksCount: recoveredData.blocks.length,
+          hasNoteInfo: !!recoveredData.noteInfo,
+        });
         
-        if (data.metadata?.blocks && Array.isArray(data.metadata.blocks) && data.metadata.blocks.length > 0) {
-          console.log('[App] 恢复blocks数据:', data.metadata.blocks.length, '个blocks');
-          setInitialBlocks(data.metadata.blocks);
-        } else {
-          console.log('[App] 无blocks数据，从纯文本创建blocks');
-          // 从纯文本创建简单的blocks结构
-          const timestamp = Date.now();
-          const textBlocks = data.text.split('\n').filter((line: string) => line.trim()).map((line: string, index: number) => ({
-            id: `block-restored-${timestamp}-${index}`,
-            type: 'paragraph',
-            content: line,
-            isAsrWriting: false,
-          }));
-          
-          // 添加note-info block
-          const noteInfoBlock = {
-            id: `block-note-info-${timestamp}`,
-            type: 'note-info',
-            content: '',
-            noteInfo: {
-              title: '',
-              type: '',
-              relatedPeople: '',
-              location: '',
-              startTime: '',
-              endTime: ''
-            }
-          };
-          
-          setInitialBlocks([noteInfoBlock, ...textBlocks]);
-        }
+        // 设置当前工作ID
+        setCurrentWorkingRecordId(recordId);
+        voiceNoteAutoSave.setCurrentRecordId(recordId);
         
-        // 切换到语音笔记视图
+        // 恢复 blocks
+        setInitialBlocks(recoveredData.blocks);
+        
+        // 提取文本（用于显示）
+        const textContent = recoveredData.blocks
+          .filter((b: any) => b.type !== 'note-info' && !b.isBufferBlock)
+          .map((b: any) => b.content)
+          .filter((text: string) => text.trim())
+          .join('\n');
+        setText(textContent);
+        
+        // 切换到语音笔记并启动工作会话
         setActiveView('voice-note');
-        console.log('[App] 切换到语音笔记视图');
+        startWorkSession('voice-note', recordId);
         
-        // 恢复工作会话（从历史记录加载相当于恢复工作）
-        startWorkSession('voice-note');
-        console.log('[App] 启动工作会话');
-        
-        // 提示用户已恢复工作
-        setToast({ message: '已恢复笔记，可以继续编辑或生成小结', type: 'info' });
+        setToast({ message: '已恢复笔记，可以继续编辑', type: 'success' });
       } else {
-        console.warn('[App] 响应中没有text字段');
+        console.warn('[历史记录] 恢复失败，数据为空');
         setToast({ message: '记录内容为空', type: 'error' });
       }
     } catch (e) {
-      console.error('[App] 恢复记录失败:', e);
+      console.error('[历史记录] 恢复失败:', e);
       setSystemError({
         code: ErrorCodes.STORAGE_READ_FAILED,
         category: ErrorCategory.STORAGE,
@@ -1030,9 +1179,6 @@ function App() {
           />
         )}
 
-        {/* 旧的错误横幅（兼容） */}
-        {error && <div className="error-banner">{error}</div>}
-
         {activeView === 'voice-note' && (
           <VoiceNote
             text={text}
@@ -1046,36 +1192,34 @@ function App() {
             apiConnected={apiConnected}
             blockEditorRef={blockEditorRef}
             isWorkSessionActive={isWorkSessionActive}
+            currentWorkingRecordId={currentWorkingRecordId}
             onStartWork={() => startWorkSession('voice-note')}
             onEndWork={exitWithSave}
             initialBlocks={initialBlocks}
             onBlockFocus={(blockId) => setEditingBlockId(blockId)}
             onBlockBlur={(blockId) => {
               setEditingBlockId(null);
-              // Block 失焦时触发数据库保存
               voiceNoteAutoSave.saveToDatabase('edit_complete', false);
             }}
-            onContentChange={(content, isDefiniteUtterance) => {
-              // ASR 确认 utterance 时立即保存到数据库
-              if (isDefiniteUtterance) {
-                console.log('[保存触发] ASR 确认 utterance');
-                voiceNoteAutoSave.saveToDatabase('definite_utterance', true);
-              }
-            }}
-            onNoteInfoChange={(noteInfo) => {
-              console.log('[保存触发] 笔记信息变更');
-              // 笔记信息变更时防抖保存
-              voiceNoteAutoSave.saveToDatabase('content_change', false);
+            onContentChange={() => {}}
+            onNoteInfoChange={() => {}}
+            onBlocksChange={() => {}}
+            onBlockConfirmed={() => {
+              console.log('[保存触发] Block 确定');
+              voiceNoteAutoSave.saveToDatabase('block_confirmed', false);
             }}
           />
         )}
 
-        {activeView === 'voice-chat' && (
-          <VoiceChat 
+        {activeView === 'smart-chat' && (
+          <SmartChat 
+            asrState={asrState}
+            onAsrStart={() => handleAsrStart('smart-chat')}
+            onAsrStop={handleAsrStop}
             apiConnected={apiConnected}
-            onStartWork={() => startWorkSession('voice-chat')}
+            isWorkSessionActive={isWorkSessionActive}
+            onStartWork={() => startWorkSession('smart-chat')}
             onEndWork={endWorkSession}
-            onContentChange={setVoiceChatHasContent}
           />
         )}
 

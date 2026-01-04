@@ -47,7 +47,8 @@ class KnowledgeService:
     
     def __init__(
         self, 
-        storage_path: str = "./data/knowledge",
+        data_dir: Path,
+        knowledge_relative_path: Path,
         embedding_model: str = "all-MiniLM-L6-v2",
         collection_name: str = "mindvoice_knowledge",
         lazy_load: bool = True
@@ -55,12 +56,15 @@ class KnowledgeService:
         """初始化知识库服务
         
         Args:
-            storage_path: 存储路径
+            data_dir: 数据根目录（从配置读取）
+            knowledge_relative_path: 知识库相对路径（从配置读取）
             embedding_model: Embedding模型名称
             collection_name: 向量数据库集合名称
             lazy_load: 是否延迟加载模型（默认True，启动时不加载模型）
         """
-        self.storage_path = Path(storage_path)
+        self.data_dir = data_dir
+        self.knowledge_relative_path = knowledge_relative_path
+        self.storage_path = self.data_dir / self.knowledge_relative_path
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         self.collection_name = collection_name

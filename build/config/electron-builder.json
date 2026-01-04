@@ -4,7 +4,7 @@
   "copyright": "Copyright © 2026 深圳王哥 & AI",
   "directories": {
     "output": "../../release/latest",
-    "buildResources": "../resources"
+    "buildResources": "../../build/resources"
   },
   "files": [
     "dist/**/*",
@@ -28,7 +28,7 @@
   ],
   "mac": {
     "category": "public.app-category.productivity",
-    "icon": "../resources/icons/icon.icns",
+    "icon": "../../build/resources/icons/icon.icns",
     "target": [
       {
         "target": "dmg",
@@ -41,8 +41,8 @@
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
-    "entitlements": "../resources/entitlements/mac.plist",
-    "entitlementsInherit": "../resources/entitlements/mac.inherit.plist",
+    "entitlements": "../../build/resources/entitlements/mac.plist",
+    "entitlementsInherit": "../../build/resources/entitlements/mac.inherit.plist",
     "type": "distribution",
     "minimumSystemVersion": "10.14.0",
     "darkModeSupport": true,
@@ -50,7 +50,7 @@
   },
   "dmg": {
     "title": "${productName} ${version}",
-    "icon": "../resources/icons/icon.icns",
+    "icon": "../../build/resources/icons/icon.icns",
     "window": {
       "width": 540,
       "height": 380
@@ -75,7 +75,7 @@
         "arch": ["x64", "ia32"]
       }
     ],
-    "icon": "../resources/icons/icon.ico",
+    "icon": "../../build/resources/icons/icon.ico",
     "artifactName": "${productName}-${version}-windows-${arch}.${ext}"
   },
   "nsis": {
@@ -88,7 +88,7 @@
   },
   "linux": {
     "target": ["AppImage", "deb", "rpm"],
-    "icon": "../resources/icons/icon.png",
+    "icon": "../../build/resources/icons/icon.png",
     "category": "Utility",
     "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
   },

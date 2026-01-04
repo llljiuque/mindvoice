@@ -325,7 +325,7 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 - 知识库使用 ChromaDB 作为向量数据库
 - 使用 `all-MiniLM-L6-v2` 作为默认 Embedding 模型（轻量级，约80MB）
 - 支持延迟加载模式，启动时不阻塞，模型在后台加载
-- 文档存储路径：`./data/knowledge/`
+- 文档存储路径：由 `config.yml` 的 `storage.data_dir/storage.knowledge` 配置决定
 - 支持的文件格式：`.md` 和 `.txt`
 
 **注意**：如果未安装知识库依赖，智能助手仍可正常使用，但无法使用知识库检索增强功能。

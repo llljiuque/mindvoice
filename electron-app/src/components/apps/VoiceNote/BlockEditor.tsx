@@ -34,6 +34,8 @@ interface BlockEditorProps {
   onNoteInfoChange?: (noteInfo: NoteInfo) => void;
   onBlockFocus?: (blockId: string) => void;
   onBlockBlur?: (blockId: string) => void;
+  onBlocksChange?: (blocks: Block[]) => void;
+  onBlockConfirmed?: () => void;
   isRecording?: boolean;
 }
 
@@ -174,6 +176,8 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   onNoteInfoChange,
   onBlockFocus,
   onBlockBlur,
+  onBlocksChange,
+  onBlockConfirmed,
   isRecording = false,
 }, ref) => {
   const [blocks, setBlocks] = useState<Block[]>(() => {
@@ -188,7 +192,8 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const lastBlockCountRef = useRef<number>(blocks.length);
   const blockRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const isComposingRef = useRef<boolean>(false); // 标记是否正在进行中文输入
+  const isComposingRef = useRef<boolean>(false);
+  const previousConfirmedIdsRef = useRef<Set<string>>(new Set());
 
   /**
    * 确保底部始终有一个缓冲块
@@ -249,6 +254,77 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       asrWritingBlockIdRef.current = null;
     }
   }, [initialBlocks, ensureBottomBufferBlock]);
+
+  /**
+   * 监听 blocks 变化，通知父组件
+   * 用于触发自动保存（仅用户手动编辑时触发）
+   * 
+   * 注意：ASR 写入时不触发此回调，因为 ASR 有专门的 onContentChange 回调
+   * 
+   * 节流策略：30秒内最多触发一次
+   * 理由：
+   * 1. 每次保存都是完整快照，不会丢失数据
+   * 2. 有多重保障：block失焦、定期保存60秒、切换视图等
+   * 3. 极端情况（崩溃）最多丢失30秒输入
+   * 4. 大幅减少不必要的触发和资源消耗
+   */
+  const lastManualSaveTriggerTimeRef = useRef<number>(0);
+  const MANUAL_SAVE_THROTTLE = 30000; // 30秒节流
+
+  useEffect(() => {
+    if (onBlocksChange) {
+      // 检查是否有正在被 ASR 写入的 block
+      const hasAsrWritingBlock = blocks.some(b => b.isAsrWriting);
+      
+      // 只有在没有 ASR 写入时才触发回调（避免 ASR 过程中频繁触发）
+      if (!hasAsrWritingBlock) {
+        const now = Date.now();
+        const timeSinceLastTrigger = now - lastManualSaveTriggerTimeRef.current;
+        
+        // 节流：30秒内只触发一次
+        if (timeSinceLastTrigger >= MANUAL_SAVE_THROTTLE) {
+          console.log('[BlockEditor] blocks 变化 (用户编辑)，触发 onBlocksChange', {
+            blockCount: blocks.length,
+            hasContent: blocks.some(b => b.type !== 'note-info' && !b.isBufferBlock && b.content.trim()),
+            timeSinceLastTrigger: `${Math.floor(timeSinceLastTrigger / 1000)}s`,
+            timestamp: new Date().toLocaleTimeString(),
+          });
+          lastManualSaveTriggerTimeRef.current = now;
+          onBlocksChange(blocks);
+        } else {
+          const remainingTime = MANUAL_SAVE_THROTTLE - timeSinceLastTrigger;
+          console.log(`[BlockEditor] blocks 变化 (用户编辑)，节流跳过 (还需等待 ${Math.ceil(remainingTime / 1000)}s)`);
+        }
+      } else {
+        console.log('[BlockEditor] blocks 变化 (ASR 写入)，跳过 onBlocksChange');
+      }
+    }
+  }, [blocks, onBlocksChange]);
+
+  useEffect(() => {
+    if (!onBlockConfirmed) return;
+    
+    const currentConfirmedBlocks = blocks.filter(b => 
+      b.type === 'paragraph' &&
+      !b.isAsrWriting &&
+      !b.isBufferBlock &&
+      b.content.trim()
+    );
+    
+    const newConfirmedBlocks = currentConfirmedBlocks.filter(b =>
+      !previousConfirmedIdsRef.current.has(b.id)
+    );
+    
+    if (newConfirmedBlocks.length > 0) {
+      console.log('[BlockEditor] 新确定的 blocks:', newConfirmedBlocks.length, {
+        ids: newConfirmedBlocks.map(b => b.id),
+        timestamp: new Date().toLocaleTimeString(),
+      });
+      onBlockConfirmed();
+      
+      previousConfirmedIdsRef.current = new Set(currentConfirmedBlocks.map(b => b.id));
+    }
+  }, [blocks, onBlockConfirmed]);
 
   /**
    * 确保存在一个用于ASR写入的block
@@ -666,7 +742,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
 
   /**
    * 检查光标是否在元素的开头
-   * 用于判断是否应该触发退格合并操作
+   * 用于判断是否应该触发退格合并操作或向上跳转
    * @param element - contentEditable元素
    * @returns 如果光标在开头返回true
    */
@@ -696,6 +772,147 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       return startRange.toString().length === 0;
     }
   };
+
+  /**
+   * 检查光标是否在元素的末尾
+   * 用于判断是否应该触发向下跳转
+   * @param element - contentEditable元素
+   * @returns 如果光标在末尾返回true
+   */
+  const isCursorAtEnd = (element: HTMLElement): boolean => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+
+    const range = selection.getRangeAt(0);
+    
+    // 检查光标是否在元素内部
+    if (!element.contains(range.startContainer) && !element.contains(range.endContainer)) {
+      return false;
+    }
+    
+    // 获取元素的完整文本长度
+    const fullText = element.textContent || '';
+    const fullLength = fullText.length;
+    
+    // 获取光标位置
+    const testRange = document.createRange();
+    try {
+      testRange.setStart(element, 0);
+      testRange.setEnd(range.endContainer, range.endOffset);
+      const caretOffset = testRange.toString().length;
+      
+      // 如果光标位置等于完整文本长度，说明光标在末尾
+      return caretOffset === fullLength;
+    } catch (e) {
+      // 如果设置范围失败，使用备用方法
+      const endRange = range.cloneRange();
+      endRange.selectNodeContents(element);
+      endRange.setStart(range.endContainer, range.endOffset);
+      return endRange.toString().length === 0;
+    }
+  };
+
+  /**
+   * 处理向上箭头键：在光标位于block开头时，跳转到上一个block的末尾
+   * @param blockId - 当前block的ID
+   * @param element - contentEditable元素
+   * @returns 如果已处理返回true（阻止默认行为），否则返回false
+   */
+  const handleArrowUp = useCallback((blockId: string, element: HTMLElement) => {
+    // 检查光标是否在开头
+    if (!isCursorAtStart(element)) {
+      return false; // 光标不在开头，让浏览器默认处理（在当前block内移动）
+    }
+
+    // 查找上一个可编辑的block
+    const currentIndex = blocks.findIndex(b => b.id === blockId);
+    if (currentIndex < 0) return false;
+
+    // 向上查找第一个可编辑的block（跳过note-info、bufferBlock、ASR正在写入的block、图片block）
+    let prevIndex = currentIndex - 1;
+    while (prevIndex >= 0) {
+      const prevBlock = blocks[prevIndex];
+      if (prevBlock.type !== 'note-info' && 
+          !prevBlock.isBufferBlock && 
+          !prevBlock.isAsrWriting &&
+          prevBlock.type !== 'image') {
+        // 找到可编辑的block，将光标移动到其末尾
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            const prevBlockElement = blockRefs.current.get(prevBlock.id)?.querySelector('[contenteditable="true"]') as HTMLElement;
+            if (prevBlockElement) {
+              prevBlockElement.focus();
+              
+              // 将光标定位到末尾
+              const selection = window.getSelection();
+              if (selection) {
+                const range = document.createRange();
+                range.selectNodeContents(prevBlockElement);
+                range.collapse(false); // 折叠到末尾
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }
+            }
+          }, 0);
+        });
+        return true; // 已处理，阻止默认行为
+      }
+      prevIndex--;
+    }
+
+    return false; // 没有找到上一个可编辑block
+  }, [blocks]);
+
+  /**
+   * 处理向下箭头键：在光标位于block末尾时，跳转到下一个block的开头
+   * @param blockId - 当前block的ID
+   * @param element - contentEditable元素
+   * @returns 如果已处理返回true（阻止默认行为），否则返回false
+   */
+  const handleArrowDown = useCallback((blockId: string, element: HTMLElement) => {
+    // 检查光标是否在末尾
+    if (!isCursorAtEnd(element)) {
+      return false; // 光标不在末尾，让浏览器默认处理（在当前block内移动）
+    }
+
+    // 查找下一个可编辑的block
+    const currentIndex = blocks.findIndex(b => b.id === blockId);
+    if (currentIndex < 0) return false;
+
+    // 向下查找第一个可编辑的block（跳过note-info、bufferBlock、ASR正在写入的block、图片block）
+    let nextIndex = currentIndex + 1;
+    while (nextIndex < blocks.length) {
+      const nextBlock = blocks[nextIndex];
+      if (nextBlock.type !== 'note-info' && 
+          !nextBlock.isBufferBlock && 
+          !nextBlock.isAsrWriting &&
+          nextBlock.type !== 'image') {
+        // 找到可编辑的block，将光标移动到其开头
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            const nextBlockElement = blockRefs.current.get(nextBlock.id)?.querySelector('[contenteditable="true"]') as HTMLElement;
+            if (nextBlockElement) {
+              nextBlockElement.focus();
+              
+              // 将光标定位到开头
+              const selection = window.getSelection();
+              if (selection) {
+                const range = document.createRange();
+                range.selectNodeContents(nextBlockElement);
+                range.collapse(true); // 折叠到开头
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }
+            }
+          }, 0);
+        });
+        return true; // 已处理，阻止默认行为
+      }
+      nextIndex++;
+    }
+
+    return false; // 没有找到下一个可编辑block
+  }, [blocks]);
 
   /**
    * 处理退格键在block开头时的合并操作
@@ -746,6 +963,9 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         return prev;
       }
       
+      // 记录原prevBlock内容的长度，用于定位光标到接合点
+      const prevContentLength = prevBlock.content.length;
+      
       // 合并内容：将当前block的内容追加到上一个block
       const mergedContent = prevBlock.content + currentBlock.content;
       
@@ -768,20 +988,19 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
         onContentChange?.(content, false);
       }, 0);
       
-      // 等待DOM更新后，将光标移动到上一个block的末尾
+      // 等待DOM更新后，将光标移动到两个内容的接合点（原prevBlock内容的末尾）
       requestAnimationFrame(() => {
         setTimeout(() => {
           const prevBlockElement = blockRefs.current.get(prevBlock.id)?.querySelector('[contenteditable="true"]') as HTMLElement;
           if (prevBlockElement) {
+            // 聚焦到上一个block，使其进入编辑状态
+            prevBlockElement.focus();
+            
+            // 将光标定位到接合点（原prevBlock内容的末尾位置）
             const newSelection = window.getSelection();
             if (newSelection) {
-              const newRange = document.createRange();
-              newRange.selectNodeContents(prevBlockElement);
-              newRange.collapse(false); // 折叠到末尾
-              newSelection.removeAllRanges();
-              newSelection.addRange(newRange);
-              // 聚焦到上一个block
-              prevBlockElement.focus();
+              // 使用restoreCursorPosition将光标定位到指定偏移量
+              restoreCursorPosition(prevBlockElement, prevContentLength);
             }
           }
         }, 0);
@@ -986,6 +1205,110 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
   // 追踪当前聚焦的 block ID
   const focusedBlockIdRef = useRef<string | null>(null);
 
+  // 拖拽相关状态
+  const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
+  const [dragOverBlockId, setDragOverBlockId] = useState<string | null>(null);
+
+  /**
+   * 判断 block 是否可拖拽
+   * note-info、缓冲块、ASR 正在写入的 block 不可拖拽
+   */
+  const isBlockDraggable = useCallback((block: Block): boolean => {
+    return block.type !== 'note-info' && 
+           !block.isBufferBlock && 
+           !block.isAsrWriting;
+  }, []);
+
+  /**
+   * 处理拖拽开始
+   */
+  const handleDragStart = useCallback((e: React.DragEvent, blockId: string) => {
+    setDraggingBlockId(blockId);
+    e.dataTransfer.effectAllowed = 'move';
+    // 设置拖拽数据
+    e.dataTransfer.setData('text/plain', blockId);
+    
+    // 设置拖拽图像为半透明
+    if (e.currentTarget instanceof HTMLElement) {
+      const dragImage = e.currentTarget.cloneNode(true) as HTMLElement;
+      dragImage.style.opacity = '0.5';
+      document.body.appendChild(dragImage);
+      e.dataTransfer.setDragImage(dragImage, 0, 0);
+      setTimeout(() => document.body.removeChild(dragImage), 0);
+    }
+  }, []);
+
+  /**
+   * 处理拖拽经过
+   */
+  const handleDragOver = useCallback((e: React.DragEvent, blockId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    if (draggingBlockId && draggingBlockId !== blockId) {
+      setDragOverBlockId(blockId);
+    }
+  }, [draggingBlockId]);
+
+  /**
+   * 处理拖拽离开
+   */
+  const handleDragLeave = useCallback(() => {
+    setDragOverBlockId(null);
+  }, []);
+
+  /**
+   * 处理放置
+   */
+  const handleDrop = useCallback((e: React.DragEvent, targetBlockId: string) => {
+    e.preventDefault();
+    
+    if (!draggingBlockId || draggingBlockId === targetBlockId) {
+      setDraggingBlockId(null);
+      setDragOverBlockId(null);
+      return;
+    }
+
+    setBlocks((prev) => {
+      const updated = [...prev];
+      
+      // 找到拖拽的 block 和目标 block 的索引
+      const dragIndex = updated.findIndex(b => b.id === draggingBlockId);
+      const dropIndex = updated.findIndex(b => b.id === targetBlockId);
+      
+      if (dragIndex < 0 || dropIndex < 0) return prev;
+      
+      // 移除拖拽的 block
+      const [draggedBlock] = updated.splice(dragIndex, 1);
+      
+      // 插入到目标位置
+      // 如果向下拖拽，目标索引需要调整
+      const newDropIndex = dragIndex < dropIndex ? dropIndex : dropIndex;
+      updated.splice(newDropIndex, 0, draggedBlock);
+      
+      const newBlocks = ensureBottomBufferBlock(updated);
+      
+      // 延迟调用 onContentChange 到下一个事件循环
+      setTimeout(() => {
+        const content = blocksToContent(newBlocks);
+        onContentChange?.(content, false);
+      }, 0);
+      
+      return newBlocks;
+    });
+
+    setDraggingBlockId(null);
+    setDragOverBlockId(null);
+  }, [draggingBlockId, ensureBottomBufferBlock, onContentChange]);
+
+  /**
+   * 处理拖拽结束
+   */
+  const handleDragEnd = useCallback(() => {
+    setDraggingBlockId(null);
+    setDragOverBlockId(null);
+  }, []);
+
   // 处理粘贴图片
   const handlePasteImage = useCallback(async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -1106,7 +1429,7 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             else blockRefs.current.delete(block.id);
           }}
         >
-          <div className="block-handle">
+          <div className="block-handle" style={{ cursor: 'not-allowed', opacity: 0.5 }}>
             <span className="handle-icon">📋</span>
           </div>
           {!isEditing ? (
@@ -1118,7 +1441,16 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
               {description}
             </div>
           ) : (
-            <div className="block-content block-note-info-edit">
+            <div 
+              className="block-content block-note-info-edit"
+              onKeyDown={(e) => {
+                // 处理ESC键：退出编辑模式
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setEditingBlockId(null);
+                }
+              }}
+            >
               <input
                 type="text"
                 className="note-info-input"
@@ -1174,17 +1506,30 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
       const imageUrl = block.imageUrl?.startsWith('http') 
         ? block.imageUrl 
         : `${API_BASE_URL}/api/${block.imageUrl}`;
+      
+      const isDraggable = isBlockDraggable(block);
+      const isDragging = draggingBlockId === block.id;
+      const isDragOver = dragOverBlockId === block.id;
 
       return (
         <div 
           key={block.id} 
-          className="block block-image-container"
+          className={`block block-image-container ${isDragging ? 'block-dragging' : ''} ${isDragOver ? 'block-drag-over' : ''}`}
+          draggable={isDraggable}
+          onDragStart={(e) => isDraggable && handleDragStart(e, block.id)}
+          onDragOver={(e) => isDraggable && handleDragOver(e, block.id)}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => isDraggable && handleDrop(e, block.id)}
+          onDragEnd={handleDragEnd}
           ref={(el) => {
             if (el) blockRefs.current.set(block.id, el);
             else blockRefs.current.delete(block.id);
           }}
         >
-          <div className="block-handle">
+          <div 
+            className="block-handle" 
+            style={{ cursor: isDraggable ? 'grab' : 'not-allowed' }}
+          >
             <span className="handle-icon">🖼️</span>
           </div>
           <div className="block-image-wrapper">
@@ -1223,17 +1568,29 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
     const Tag = getTagName(block.type) as 'p' | 'h1' | 'h2' | 'h3' | 'pre';
     const canEdit = !block.isAsrWriting; // ASR正在写入的block不能编辑
     const hasTimeInfo = block.startTime !== undefined && block.endTime !== undefined;
+    const isDraggable = isBlockDraggable(block);
+    const isDragging = draggingBlockId === block.id;
+    const isDragOver = dragOverBlockId === block.id;
 
     return (
       <div 
         key={block.id} 
-        className={`block ${block.isAsrWriting ? 'block-asr-writing-container' : ''} ${block.isSummary ? 'block-summary-container' : ''}`}
+        className={`block ${block.isAsrWriting ? 'block-asr-writing-container' : ''} ${block.isSummary ? 'block-summary-container' : ''} ${isDragging ? 'block-dragging' : ''} ${isDragOver ? 'block-drag-over' : ''}`}
+        draggable={isDraggable}
+        onDragStart={(e) => isDraggable && handleDragStart(e, block.id)}
+        onDragOver={(e) => isDraggable && handleDragOver(e, block.id)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => isDraggable && handleDrop(e, block.id)}
+        onDragEnd={handleDragEnd}
         ref={(el) => {
           if (el) blockRefs.current.set(block.id, el);
           else blockRefs.current.delete(block.id);
         }}
       >
-        <div className="block-handle">
+        <div 
+          className="block-handle"
+          style={{ cursor: isDraggable ? 'grab' : 'not-allowed' }}
+        >
           <span className="handle-icon">⋮⋮</span>
         </div>
         <div className="block-content-wrapper">
@@ -1256,6 +1613,34 @@ export const BlockEditor = forwardRef<BlockEditorHandle, BlockEditorProps>(({
             onKeyDown={(e) => {
               // 如果正在进行中文输入，不处理特殊按键
               if (isComposingRef.current) {
+                return;
+              }
+              
+              // 处理ESC键：退出编辑状态（失去焦点）
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                const element = e.currentTarget;
+                element.blur(); // 失去焦点，退出编辑状态
+                return;
+              }
+              
+              // 处理向上箭头键：在光标位于block开头时，跳转到上一个block
+              if (e.key === 'ArrowUp' && canEdit) {
+                const element = e.currentTarget;
+                const handled = handleArrowUp(block.id, element);
+                if (handled) {
+                  e.preventDefault();
+                }
+                return;
+              }
+              
+              // 处理向下箭头键：在光标位于block末尾时，跳转到下一个block
+              if (e.key === 'ArrowDown' && canEdit) {
+                const element = e.currentTarget;
+                const handled = handleArrowDown(block.id, element);
+                if (handled) {
+                  e.preventDefault();
+                }
                 return;
               }
               

@@ -73,7 +73,6 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
         title="选择翻译语言"
         aria-label="翻译语言选择"
       >
-        <span className="language-icon">🌐</span>
         <span className="language-current">{selectedOption.icon} {selectedOption.label}</span>
         {loading ? (
           <span className="language-loading">

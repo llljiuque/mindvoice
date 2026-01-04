@@ -49,7 +49,8 @@ async function pollMessages() {
       
       // 通过 IPC 推送到渲染进程
       messages.forEach((item, index) => {
-        console.log(`  [${index + 1}/${messages.length}] 消息ID: ${item.id}, 类型: ${item.message.type}, 时间: ${new Date(item.timestamp).toLocaleTimeString()}`);
+        // Python的time.time()返回秒，需要转换为毫秒（* 1000）
+        console.log(`  [${index + 1}/${messages.length}] 消息ID: ${item.id}, 类型: ${item.message.type}, 时间: ${new Date(item.timestamp * 1000).toLocaleTimeString()}`);
         mainWindow?.webContents.send('asr-message', item.message);
         lastMessageId = item.id;
       });
@@ -63,19 +64,34 @@ async function pollMessages() {
 /**
  * 启动轮询
  */
-function startPolling() {
+async function startPolling() {
   if (pollingTimer) {
     console.log('[轮询] 已在运行');
     return;
   }
   
   console.log('[轮询] 开始轮询后端消息 (间隔: 100ms)');
+  
+  // 清空后端消息缓冲区，避免堆积的旧消息
+  try {
+    console.log('[轮询] 清空后端消息缓冲区...');
+    const response = await fetch(`${API_URL}/api/messages/clear`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok) {
+      console.log('[轮询] 消息缓冲区已清空');
+    }
+  } catch (error) {
+    console.warn('[轮询] 清空消息缓冲区失败（后端可能未启动）');
+  }
+  
   lastMessageId = 0; // 重置消息ID
   
   // 立即执行一次
   pollMessages();
   
-  // 每 100ms 轮询一次
+  // 每 100ms 轮询一次（恢复原始间隔，保证实时性）
   pollingTimer = setInterval(pollMessages, 100);
 }
 
@@ -613,6 +629,30 @@ function setupCSP(): void {
     });
   });
 }
+
+/**
+ * 设置 Electron 用户数据目录（在 app.whenReady() 之前调用）
+ * 将 Electron 的缓存/配置与应用数据分离
+ */
+const os = require('os');
+const electronAppName = 'MindVoice-App'; // Electron 专用目录
+
+// 根据平台设置 Electron 数据目录
+let electronUserDataPath: string;
+if (process.platform === 'darwin') {
+  // macOS: ~/Library/Application Support/MindVoice-App
+  electronUserDataPath = path.join(os.homedir(), 'Library', 'Application Support', electronAppName);
+} else if (process.platform === 'win32') {
+  // Windows: %APPDATA%/MindVoice-App
+  electronUserDataPath = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), electronAppName);
+} else {
+  // Linux: ~/.config/MindVoice-App
+  electronUserDataPath = path.join(os.homedir(), '.config', electronAppName);
+}
+
+// 设置 Electron 用户数据目录
+app.setPath('userData', electronUserDataPath);
+console.log(`[主进程] Electron 用户数据目录: ${electronUserDataPath}`);
 
 /**
  * 应用准备就绪

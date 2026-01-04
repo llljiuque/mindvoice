@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { BlockEditor, NoteInfo } from './BlockEditor';
+import { BlockEditor, NoteInfo, Block } from './BlockEditor';
 import { WelcomeScreen } from './WelcomeScreen';
 import { BottomToolbar } from './BottomToolbar';
 import { AppLayout } from '../../shared/AppLayout';
@@ -36,6 +36,7 @@ interface VoiceNoteProps {
   blockEditorRef?: React.RefObject<BlockEditorHandle>;
   // 工作会话
   isWorkSessionActive: boolean;
+  currentWorkingRecordId: string | null;
   onStartWork: () => void;
   onEndWork: () => void;
   initialBlocks?: any[];
@@ -44,6 +45,8 @@ interface VoiceNoteProps {
   onBlockBlur?: (blockId: string) => void;
   onContentChange?: (content: string, isDefiniteUtterance?: boolean) => void;
   onNoteInfoChange?: (noteInfo: NoteInfo) => void;
+  onBlocksChange?: (blocks: Block[]) => void;
+  onBlockConfirmed?: () => void;
 }
 
 export const VoiceNote: React.FC<VoiceNoteProps> = ({
@@ -56,6 +59,7 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   apiConnected,
   blockEditorRef,
   isWorkSessionActive,
+  currentWorkingRecordId,
   onStartWork,
   onEndWork,
   initialBlocks,
@@ -63,12 +67,14 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
   onBlockBlur,
   onContentChange,
   onNoteInfoChange,
+  onBlocksChange,
+  onBlockConfirmed, // 新增
 }) => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<LanguageType>('original');
   
-  // 判断是否显示欢迎界面：只要工作会话未激活，就显示欢迎界面
-  const showWelcome = !isWorkSessionActive;
+  // 判断是否显示欢迎界面：工作会话未激活 且 没有正在进行的任务
+  const showWelcome = !isWorkSessionActive && currentWorkingRecordId === null;
   
   // 检查是否有内容（从blockEditorRef获取）
   const hasContent = () => {
@@ -306,6 +312,8 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
             onNoteInfoChange={onNoteInfoChange}
             onBlockFocus={onBlockFocus}
             onBlockBlur={onBlockBlur}
+            onBlocksChange={onBlocksChange}
+            onBlockConfirmed={onBlockConfirmed}
             isRecording={asrState === 'recording'}
             ref={blockEditorRef}
           />

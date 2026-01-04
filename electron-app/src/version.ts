@@ -3,7 +3,7 @@
  * 这是全局版本号的唯一来源
  */
 export const APP_VERSION = {
-  version: '1.5.0',
+  version: '1.5.1',
   releaseDate: '2026-01-04',
   name: 'MindVoice',
   description: 'AI驱动的语音桌面助手'

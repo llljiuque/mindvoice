@@ -77,8 +77,20 @@ export class VoiceNoteAdapter implements AppAdapter {
   getStableData(): VoiceNoteData {
     const allData = this.getAllData();
     
+    console.log('[VoiceNoteAdapter] 🔍 getStableData - allData:', {
+      totalBlocks: allData.blocks.length,
+      noteInfo: allData.noteInfo,
+    });
+    
+    const stableBlocks = allData.blocks.filter(block => !this.isVolatile(block));
+    
+    console.log('[VoiceNoteAdapter] 🔍 getStableData - stableBlocks:', {
+      stableBlocksCount: stableBlocks.length,
+      totalBlocks: allData.blocks.length,
+    });
+    
     return {
-      blocks: allData.blocks.filter(block => !this.isVolatile(block)),
+      blocks: stableBlocks,
       noteInfo: allData.noteInfo,
     };
   }
@@ -89,6 +101,12 @@ export class VoiceNoteAdapter implements AppAdapter {
   toSaveData(stableData: VoiceNoteData): SaveData {
     const { blocks, noteInfo } = stableData;
     
+    console.log('[VoiceNoteAdapter] 💾 toSaveData 输入:', {
+      blocksCount: blocks.length,
+      hasNoteInfo: !!noteInfo,
+      noteInfo,
+    });
+    
     // 计算文本内容
     const textContent = blocks
       .filter(b => b.type !== 'note-info' && !b.isBufferBlock)
@@ -96,20 +114,32 @@ export class VoiceNoteAdapter implements AppAdapter {
         if (b.isSummary) {
           return `[SUMMARY_BLOCK_START]${b.content}[SUMMARY_BLOCK_END]`;
         }
+        // 图片块：添加占位符到 text 字段
+        if (b.type === 'image') {
+          return `[IMAGE: ${b.imageUrl || ''}]${b.imageCaption ? ' ' + b.imageCaption : ''}`;
+        }
         return b.content;
       })
       .filter(text => text.trim())
       .join('\n');
     
-    return {
+    const result = {
       text: textContent,
-      app_type: 'voice-note',
+      app_type: 'voice-note' as const,
       metadata: {
         blocks,
         noteInfo,
         block_count: blocks.length,
       },
     };
+    
+    console.log('[VoiceNoteAdapter] 💾 toSaveData 输出:', {
+      textLength: result.text.length,
+      metadataBlocksCount: result.metadata.blocks.length,
+      metadataHasNoteInfo: !!result.metadata.noteInfo,
+    });
+    
+    return result;
   }
   
   /**
@@ -118,15 +148,16 @@ export class VoiceNoteAdapter implements AppAdapter {
   hasContent(data: VoiceNoteData): boolean {
     const { blocks, noteInfo } = data;
     
-    // 检查是否有有效的 block 内容
+    // 检查是否有有效的 block 内容（排除 note-info 和 buffer block）
     const hasBlockContent = blocks.some(b => 
       b.type !== 'note-info' && 
       !b.isBufferBlock && 
       (b.content?.trim() || b.type === 'image')
     );
     
-    // 或者有笔记信息
-    return hasBlockContent || !!noteInfo;
+    // 仅有 noteInfo 不算有效内容（需要至少有一个 block）
+    // 这样可以避免在只编辑 note-info 时就触发保存
+    return hasBlockContent;
   }
 }
 
