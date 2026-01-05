@@ -21,6 +21,7 @@
   flex-direction: column;
   min-width: 0;
   gap: var(--space-sm);
+  padding-top: var(--space-md);
   padding-bottom: var(--space-md);
 }
 

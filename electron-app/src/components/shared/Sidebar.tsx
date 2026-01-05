@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './Sidebar.css';
 
-export type AppView = 'voice-note' | 'smart-chat' | 'knowledge-base' | 'voice-zen' | 'membership' | 'history' | 'settings' | 'about';
+export type AppView = 'voice-note' | 'smart-chat' | 'knowledge-base' | 'voice-zen' | 'membership' | 'history' | 'settings';
 
 interface SidebarProps {
   activeView: AppView;
@@ -157,6 +157,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           <div className="nav-divider"></div>
           
           <button
+            className={`nav-item ${activeView === 'history' ? 'active' : ''}`}
+            onClick={() => onViewChange('history')}
+            aria-label="历史记录"
+            aria-current={activeView === 'history' ? 'page' : undefined}
+            title="历史记录"
+          >
+            <span className="nav-icon" aria-hidden="true">📋</span>
+          </button>
+          
+          <button
             className={`nav-item ${activeView === 'knowledge-base' ? 'active' : ''}`}
             onClick={() => onViewChange('knowledge-base')}
             aria-label="知识库"
@@ -165,6 +175,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           >
             <span className="nav-icon" aria-hidden="true">📚</span>
           </button>
+          
+          <div className="nav-divider"></div>
           
           <button
             className={`nav-item ${activeView === 'membership' ? 'active' : ''}`}
@@ -177,16 +189,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
           </button>
           
           <button
-            className={`nav-item ${activeView === 'history' ? 'active' : ''}`}
-            onClick={() => onViewChange('history')}
-            aria-label="历史记录"
-            aria-current={activeView === 'history' ? 'page' : undefined}
-            title="历史记录"
-          >
-            <span className="nav-icon" aria-hidden="true">📋</span>
-          </button>
-          
-          <button
             className={`nav-item ${activeView === 'settings' ? 'active' : ''}`}
             onClick={() => onViewChange('settings')}
             aria-label="设置"
@@ -194,16 +196,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeView, onViewChange }) =>
             title="设置"
           >
             <span className="nav-icon" aria-hidden="true">⚙️</span>
-          </button>
-          
-          <button
-            className={`nav-item ${activeView === 'about' ? 'active' : ''}`}
-            onClick={() => onViewChange('about')}
-            aria-label="关于"
-            aria-current={activeView === 'about' ? 'page' : undefined}
-            title="关于"
-          >
-            <span className="nav-icon" aria-hidden="true">ℹ️</span>
           </button>
         </nav>
       </div>

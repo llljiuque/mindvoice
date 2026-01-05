@@ -88,10 +88,11 @@ def create_membership_tables(db_path: Path) -> None:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_memberships_tier ON memberships(tier)')
         logger.info("[数据库] ✓ 会员信息表已创建")
         
-        # 4. 消费记录表
+        # 4. 消费记录表（v1.2.1：以user_id为主，device_id仅用于记录消费发生的设备）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS consumption_records (
                 id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
                 device_id TEXT NOT NULL,
                 year INTEGER NOT NULL,
                 month INTEGER NOT NULL,
@@ -103,6 +104,7 @@ def create_membership_tables(db_path: Path) -> None:
                 session_id TEXT,
                 timestamp TIMESTAMP NOT NULL,
                 created_at TIMESTAMP NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 FOREIGN KEY (device_id) REFERENCES devices(device_id),
                 CHECK (type IN ('asr', 'llm')),
                 CHECK (unit IN ('ms', 'tokens')),
@@ -111,23 +113,27 @@ def create_membership_tables(db_path: Path) -> None:
             )
         ''')
         cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_consumption_user_time 
+            ON consumption_records(user_id, year, month, timestamp DESC)
+        ''')
+        cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_consumption_device_time 
             ON consumption_records(device_id, year, month, timestamp DESC)
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_consumption_type 
-            ON consumption_records(device_id, type)
+            ON consumption_records(user_id, type)
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_consumption_model_source 
-            ON consumption_records(device_id, type, model_source)
+            ON consumption_records(user_id, type, model_source)
         ''')
-        logger.info("[数据库] ✓ 消费记录表已创建")
+        logger.info("[数据库] ✓ 消费记录表已创建（v1.2.1：以user_id为主）")
         
-        # 5. 月度消费汇总表
+        # 5. 月度消费汇总表（v1.2.1：以user_id为主，不区分device_id）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS monthly_consumption (
-                device_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
                 year INTEGER NOT NULL,
                 month INTEGER NOT NULL,
                 asr_duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -137,17 +143,17 @@ def create_membership_tables(db_path: Path) -> None:
                 record_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP NOT NULL,
-                PRIMARY KEY (device_id, year, month),
-                FOREIGN KEY (device_id) REFERENCES devices(device_id),
+                PRIMARY KEY (user_id, year, month),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 CHECK (asr_duration_ms >= 0),
                 CHECK (llm_total_tokens >= 0)
             )
         ''')
         cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_monthly_consumption_device 
-            ON monthly_consumption(device_id, year DESC, month DESC)
+            CREATE INDEX IF NOT EXISTS idx_monthly_consumption_user 
+            ON monthly_consumption(user_id, year DESC, month DESC)
         ''')
-        logger.info("[数据库] ✓ 月度消费汇总表已创建")
+        logger.info("[数据库] ✓ 月度消费汇总表已创建（v1.2.1：以user_id为主）")
         
         # 6. 会员升级历史表
         cursor.execute('''

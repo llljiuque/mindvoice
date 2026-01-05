@@ -38,6 +38,7 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ deviceId }) =>
   const [email, setEmail] = useState('');
   const [bio, setBio] = useState('');
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [showUserId, setShowUserId] = useState(false); // 控制 user_id 显示/隐藏
 
   // 加载用户信息
   useEffect(() => {
@@ -167,30 +168,68 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ deviceId }) =>
         <div className="form-group avatar-group">
           <label>头像</label>
           <div className="avatar-upload">
-            <div className="avatar-preview">
-              {avatarPreview ? (
-                <img src={avatarPreview} alt="头像" />
-              ) : (
-                <div className="avatar-placeholder">
-                  <span>{nickname?.[0]?.toUpperCase() || '?'}</span>
+            <input
+              type="file"
+              id="avatar-input"
+              accept="image/png,image/jpeg,image/jpg"
+              onChange={handleAvatarChange}
+              style={{ display: 'none' }}
+            />
+            <label htmlFor="avatar-input" className="avatar-preview-label">
+              <div className="avatar-preview">
+                {avatarPreview ? (
+                  <img src={avatarPreview} alt="头像" />
+                ) : (
+                  <div className="avatar-placeholder">
+                    <span>{nickname?.[0]?.toUpperCase() || '?'}</span>
+                  </div>
+                )}
+                <div className="avatar-overlay">
+                  <span className="avatar-overlay-text">点击更换</span>
                 </div>
-              )}
-            </div>
+              </div>
+            </label>
             <div className="avatar-actions">
-              <input
-                type="file"
-                id="avatar-input"
-                accept="image/png,image/jpeg,image/jpg"
-                onChange={handleAvatarChange}
-                style={{ display: 'none' }}
-              />
-              <label htmlFor="avatar-input" className="btn-upload">
-                选择图片
-              </label>
-              <p className="hint">支持 PNG、JPG，最大 5MB</p>
+              <p className="hint">轻点头像即可上传，支持 PNG、JPG 格式，大小不超过 5MB</p>
             </div>
           </div>
         </div>
+
+        {/* 用户ID（只读） */}
+        {profile && (
+          <div className="form-group user-id-group">
+            <label htmlFor="user-id">用户ID</label>
+            <div className="user-id-field">
+              <input
+                id="user-id"
+                type="text"
+                value={showUserId ? profile.user_id : '••••••••••••••••••••••••••••••••••••'}
+                readOnly
+                className="user-id-input"
+              />
+              <button
+                type="button"
+                className="btn-toggle-visibility"
+                onClick={() => setShowUserId(!showUserId)}
+                title={showUserId ? "隐藏用户ID" : "显示用户ID"}
+              >
+                {showUserId ? '🙈' : '👁️'}
+              </button>
+              <button
+                type="button"
+                className="btn-copy-id"
+                onClick={() => {
+                  navigator.clipboard.writeText(profile.user_id);
+                  showMessage('success', '用户ID已复制到剪贴板');
+                }}
+                title="复制用户ID"
+              >
+                📋
+              </button>
+            </div>
+            <p className="hint security-hint">⚠️ 这是您的唯一身份标识，请勿泄露给他人</p>
+          </div>
+        )}
 
         {/* 昵称 */}
         <div className="form-group">
@@ -251,21 +290,16 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ deviceId }) =>
         )}
       </div>
 
-      {/* 账户信息 */}
+      {/* 账户信息（只显示时间信息，不重复显示user_id） */}
       {profile && (
-        <div className="account-info">
-          <h3>账户信息</h3>
-          <div className="info-item">
-            <span className="label">用户ID:</span>
-            <span className="value">{profile.user_id}</span>
-          </div>
-          <div className="info-item">
+        <div className="account-info-simple">
+          <div className="info-row">
             <span className="label">注册时间:</span>
-            <span className="value">{new Date(profile.created_at).toLocaleString()}</span>
+            <span className="value">{new Date(profile.created_at).toLocaleString('zh-CN')}</span>
           </div>
-          <div className="info-item">
+          <div className="info-row">
             <span className="label">最后更新:</span>
-            <span className="value">{new Date(profile.updated_at).toLocaleString()}</span>
+            <span className="value">{new Date(profile.updated_at).toLocaleString('zh-CN')}</span>
           </div>
         </div>
       )}

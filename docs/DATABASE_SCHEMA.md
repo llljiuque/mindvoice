@@ -6,7 +6,7 @@
 - **位置**: 由 `config.yml` 中的 `storage.data_dir` + `storage.database` 配置决定
 - **共享机制**: 3个应用（voice-note, smart-chat, voice-zen）共享同一数据库，通过 `app_type` 字段区分
 
-## records 表（里程碑基准版本）
+## records 表（用户绑定版本）
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
@@ -14,8 +14,15 @@ CREATE TABLE IF NOT EXISTS records (
     text TEXT NOT NULL,
     metadata TEXT,
     app_type TEXT NOT NULL DEFAULT 'voice-note',
+    user_id TEXT,
+    device_id TEXT,
     created_at TIMESTAMP NOT NULL
 );
+
+-- 索引
+CREATE INDEX idx_records_user_id ON records(user_id);
+CREATE INDEX idx_records_device_id ON records(device_id);
+CREATE INDEX idx_records_user_created ON records(user_id, created_at DESC);
 ```
 
 ### 字段说明
@@ -26,6 +33,8 @@ CREATE TABLE IF NOT EXISTS records (
 | `text` | TEXT | 纯文本内容，用于搜索和预览 |
 | `metadata` | TEXT | JSON 格式元数据（blocks、noteInfo 等）|
 | `app_type` | TEXT | 应用类型（voice-note/smart-chat/voice-zen）|
+| `user_id` | TEXT | ⭐ 用户ID（关联 users 表），可选 |
+| `device_id` | TEXT | ⭐ 设备ID（关联 user_devices 表），可选 |
 | `created_at` | TIMESTAMP | 创建时间，本地时间格式 `YYYY-MM-DD HH:MM:SS` |
 
 ## metadata 字段结构
@@ -134,6 +143,95 @@ cp "$DB_PATH" "${DB_PATH}.backup"
 sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM records;"
 ```
 
+## users 表（用户管理）
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    nickname TEXT,
+    email TEXT,
+    bio TEXT,
+    avatar_url TEXT,
+    login_count INTEGER DEFAULT 0,
+    last_login_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+-- 索引
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_active_login ON users(last_login_at DESC);
+```
+
+### 字段说明
+
+| 字段 | 类型 | 说明 |
+|-----|------|------|
+| `user_id` | TEXT | 用户ID，UUID v4 格式 |
+| `nickname` | TEXT | 昵称（可选，最长50字符） |
+| `email` | TEXT | 邮箱（可选） |
+| `bio` | TEXT | 个人简介（可选，最长500字符） |
+| `avatar_url` | TEXT | 头像URL，相对路径（如 `images/xxx.png`） |
+| `login_count` | INTEGER | 登录次数 |
+| `last_login_at` | TIMESTAMP | 最后登录时间 |
+| `created_at` | TIMESTAMP | 注册时间 |
+| `updated_at` | TIMESTAMP | 最后更新时间 |
+
+## user_devices 表（设备绑定）
+
+```sql
+CREATE TABLE IF NOT EXISTS user_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    device_id TEXT NOT NULL UNIQUE,
+    device_name TEXT,
+    bound_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- 索引
+CREATE INDEX idx_user_devices_user_id ON user_devices(user_id);
+CREATE INDEX idx_user_devices_device_id ON user_devices(device_id);
+```
+
+### 字段说明
+
+| 字段 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER | 自增主键 |
+| `user_id` | TEXT | 用户ID（外键） |
+| `device_id` | TEXT | 设备ID（唯一） |
+| `device_name` | TEXT | 设备名称（可选） |
+| `bound_at` | TIMESTAMP | 绑定时间 |
+
+## 数据关系
+
+```
+users (1) ←─── (N) user_devices (N) ←─── (N) records
+  ↓                                           ↑
+  └─────────────── (1:N) ─────────────────────┘
+```
+
+- 一个用户可以绑定多个设备
+- 一个设备只能绑定一个用户（UNIQUE约束）
+- 一个用户可以创建多条记录
+- 一条记录属于一个用户和一个设备
+
+## 数据库初始化
+
+数据库表和索引会在首次启动应用时自动创建：
+
+1. 应用启动时调用 `_create_table()` 方法
+2. 检查表是否存在，不存在则创建
+3. 检查字段是否存在，不存在则添加（兼容性处理）
+4. 创建所有必需的索引
+
+**特性**：
+- ✅ 自动创建表结构
+- ✅ 自动添加缺失字段
+- ✅ 自动创建索引
+- ✅ 向后兼容（旧数据库自动升级）
+
 ## 数据库维护
 
 ### 重建数据库
@@ -146,6 +244,18 @@ sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM records;"
 
 ```bash
 sqlite3 "$DB_PATH" ".schema records"
+sqlite3 "$DB_PATH" ".schema users"
+sqlite3 "$DB_PATH" ".schema user_devices"
 sqlite3 "$DB_PATH" ".tables"
+```
+
+### 按用户统计记录数
+
+```sql
+SELECT u.user_id, u.nickname, COUNT(r.id) as record_count
+FROM users u
+LEFT JOIN records r ON u.user_id = r.user_id
+GROUP BY u.user_id
+ORDER BY record_count DESC;
 ```
 

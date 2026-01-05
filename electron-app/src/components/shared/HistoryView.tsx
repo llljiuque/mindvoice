@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { AppLayout } from './AppLayout';
 import './HistoryView.css';
 
 interface Record {
@@ -121,61 +122,56 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
   if (loading) {
     return (
-      <div className="history-view">
-        <div className="history-container">
-          <div className="history-header">
-            <div className="history-logo">
-              <span className="history-logo-icon">📚</span>
-            </div>
-            <h1 className="history-title-text">历史记录</h1>
-            <p className="history-subtitle">查看和管理您的语音记录</p>
-          </div>
-          <div className="history-content">
-            <div className="history-loading">
-              <div className="loading-spinner"></div>
-              <div>加载中...</div>
+      <AppLayout
+        title="历史记录"
+        subtitle="查看和管理您的语音记录"
+        icon="📋"
+      >
+        <div className="history-view">
+          <div className="history-container">
+            <div className="history-content">
+              <div className="history-loading">
+                <div className="loading-spinner"></div>
+                <div>加载中...</div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </AppLayout>
     );
   }
 
   if (records.length === 0 && total === 0) {
     return (
-      <div className="history-view">
-        <div className="history-container">
-          <div className="history-header">
-            <div className="history-logo">
-              <span className="history-logo-icon">📚</span>
-            </div>
-            <h1 className="history-title-text">历史记录</h1>
-            <p className="history-subtitle">查看和管理您的语音记录</p>
-          </div>
-          <div className="history-content">
-            <div className="history-empty">
-              <div className="empty-icon">📝</div>
-              <div className="empty-title">暂无历史记录</div>
-              <div className="empty-description">开始录音后，记录将自动保存</div>
+      <AppLayout
+        title="历史记录"
+        subtitle="查看和管理您的语音记录"
+        icon="📋"
+      >
+        <div className="history-view">
+          <div className="history-container">
+            <div className="history-content">
+              <div className="history-empty">
+                <div className="empty-icon">📝</div>
+                <div className="empty-title">暂无历史记录</div>
+                <div className="empty-description">开始录音后，记录将自动保存</div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </AppLayout>
     );
   }
 
   return (
-    <div className="history-view">
-      <div className="history-container">
-        <div className="history-header">
-          <div className="history-logo">
-            <span className="history-logo-icon">📚</span>
-          </div>
-          <h1 className="history-title-text">历史记录</h1>
-          <p className="history-subtitle">查看和管理您的语音记录</p>
-        </div>
-
-        <div className="history-content">
+    <AppLayout
+      title="历史记录"
+      subtitle="查看和管理您的语音记录"
+      icon="📋"
+    >
+      <div className="history-view">
+        <div className="history-container">
+          <div className="history-content">
           <div className="history-stats">
             <h2 className="section-title">记录统计</h2>
             <div className="stats-info">
@@ -294,8 +290,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               </div>
             )}
           </div>
+          </div>
         </div>
       </div>
-    </div>
+    </AppLayout>
   );
 };

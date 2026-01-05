@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { AppLayout } from './AppLayout';
+import { APP_VERSION } from '../../version';
 import './SettingsView.css';
 
 const API_BASE_URL = 'http://127.0.0.1:8765';
@@ -197,17 +199,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
   }, [apiConnected]);
 
   return (
-    <div className="settings-view">
-      <div className="settings-container">
-        <div className="settings-header">
-          <div className="settings-logo">
-            <span className="settings-logo-icon">⚙️</span>
-          </div>
-          <h1 className="settings-title">设置</h1>
-          <p className="settings-subtitle">配置应用参数</p>
-        </div>
-
-        <div className="settings-content">
+    <AppLayout
+      title="设置"
+      subtitle="配置应用参数"
+      icon="⚙️"
+    >
+      <div className="settings-view">
+        <div className="settings-container">
+          <div className="settings-content">
           {message && (
             <div className={`settings-message settings-message-${message.type}`}>
               {message.text}
@@ -476,9 +475,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
             </>
           )}
           </div>
+
+          <div className="settings-section">
+            <h2 className="section-title">关于</h2>
+            <p className="settings-section-description">
+              MindVoice 是一个被认真对待的产品。我们不追求"惊艳"，也不希望用复杂功能打动你。
+              它更像一个长期存在的工具：能听、能记、能在你需要的时候回应。
+            </p>
+            
+            <div className="settings-about-content">
+              <div className="settings-about-info-grid">
+                <div className="settings-about-info-item">
+                  <span className="settings-about-info-label">版本号</span>
+                  <span className="settings-about-info-value">{APP_VERSION.version}</span>
+                </div>
+                <div className="settings-about-info-item">
+                  <span className="settings-about-info-label">发布日期</span>
+                  <span className="settings-about-info-value">{APP_VERSION.releaseDate}</span>
+                </div>
+              </div>
+
+              <div className="settings-about-developer">
+                <div className="settings-about-developer-name">开发者：深圳王哥 & AI</div>
+                <div className="settings-about-contact">
+                  <div className="settings-about-contact-item">
+                    <span className="settings-about-contact-label">邮箱：</span>
+                    <a href="mailto:manwjh@126.com" className="settings-about-contact-link">
+                      manwjh@126.com
+                    </a>
+                  </div>
+                  <div className="settings-about-contact-item">
+                    <span className="settings-about-contact-label">电话：</span>
+                    <span className="settings-about-contact-value">13510090675（微信同号）</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-about-tech">
+                <div className="settings-about-tech-label">技术栈：</div>
+                <div className="settings-about-tech-badges">
+                  <span className="settings-about-tech-badge">Electron</span>
+                  <span className="settings-about-tech-badge">React</span>
+                  <span className="settings-about-tech-badge">TypeScript</span>
+                  <span className="settings-about-tech-badge">Python</span>
+                  <span className="settings-about-tech-badge">FastAPI</span>
+                  <span className="settings-about-tech-badge">WebSocket</span>
+                </div>
+              </div>
+
+              <div className="settings-about-footer">
+                <p className="settings-about-copyright">© 2025 深圳王哥 & AI. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+          </div>
         </div>
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

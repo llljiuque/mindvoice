@@ -98,10 +98,16 @@ export const AboutView: React.FC = () => {
             <div className="developer-info">
               <p className="developer-name">深圳王哥 & AI</p>
               <div className="contact-info">
-                <span className="contact-label">联系方式：</span>
-                <a href="mailto:manwjh@126.com" className="contact-link">
-                  manwjh@126.com
-                </a>
+                <div className="contact-item">
+                  <span className="contact-label">邮箱：</span>
+                  <a href="mailto:manwjh@126.com" className="contact-link">
+                    manwjh@126.com
+                  </a>
+                </div>
+                <div className="contact-item">
+                  <span className="contact-label">电话：</span>
+                  <span className="contact-value">13510090675（微信同号）</span>
+                </div>
               </div>
             </div>
           </div>

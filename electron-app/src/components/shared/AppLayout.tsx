@@ -42,6 +42,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             {icon && <span className="app-icon">{icon}</span>}
             <div className="app-title-group">
               <h2 className="app-title">{title}</h2>
+              {subtitle && <p className="app-subtitle">{subtitle}</p>}
             </div>
           </div>
           {statusIndicator && (

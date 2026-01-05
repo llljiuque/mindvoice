@@ -1,12 +1,17 @@
 """
-会员服务模块
+会员服务模块 (v1.2.1 重构版)
+
+核心变化：
+- 会员等级绑定到用户（user_id），而不是设备（device_id）
+- 一个用户可以有多个设备，共享会员权益
+- 消费记录区分设备，但额度按用户统计
 
 功能：
 - 设备注册与管理
-- 会员信息管理
+- 会员信息管理（基于用户）
 - 会员状态检查
 - 会员升级与续费
-- 额度查询与验证
+- 额度查询与验证（按用户）
 """
 
 import sqlite3
@@ -58,7 +63,7 @@ class MembershipQuota:
 
 
 class MembershipService:
-    """会员服务"""
+    """会员服务（v1.2.1 重构：以用户为中心）"""
     
     def __init__(self, config: Config):
         """初始化会员服务
@@ -73,31 +78,20 @@ class MembershipService:
         database_relative = Path(config.get('storage.database'))
         self.db_path = data_dir / database_relative
         
-        logger.info(f"[会员服务] 初始化，数据库: {self.db_path}")
-        
-        # 确保数据库和表存在
-        self._ensure_database()
-    
-    def _ensure_database(self) -> None:
-        """确保数据库和表存在"""
-        if not self.db_path.exists():
-            logger.warning("[会员服务] 数据库不存在，将自动创建")
-            # 运行初始化脚本
-            from scripts.init_membership_db import create_membership_tables
-            create_membership_tables(self.db_path)
+        logger.info(f"[会员服务] 初始化 (v1.2.1)，数据库: {self.db_path}")
     
     def _get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
-        # 启用WAL模式，支持并发读写
         conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA foreign_keys=ON')
         return conn
     
     # ==================== 设备管理 ====================
     
     def register_device(self, device_id: str, machine_id: str, platform: str) -> Dict[str, Any]:
-        """注册新设备并自动开通免费会员
+        """注册新设备（仅注册设备，不创建会员）
         
         Args:
             device_id: 设备ID
@@ -105,7 +99,7 @@ class MembershipService:
             platform: 平台（darwin/win32/linux）
         
         Returns:
-            设备和会员信息
+            设备信息
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -120,50 +114,38 @@ class MembershipService:
                 # 更新最后活跃时间
                 cursor.execute('''
                     UPDATE devices 
-                    SET last_active_time = ?, install_count = install_count + 1
+                    SET last_active_at = ?
                     WHERE device_id = ?
                 ''', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), device_id))
                 conn.commit()
                 
-                # 返回现有信息
-                membership = self.get_membership(device_id)
                 return {
                     'device_id': device_id,
                     'is_new': False,
-                    'membership': membership
+                    'machine_id': existing['machine_id'],
+                    'platform': existing['platform'],
+                    'first_registered_at': existing['first_registered_at'],
+                    'last_active_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
             
             # 注册新设备
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute('''
-                INSERT INTO devices (device_id, machine_id, platform, first_install_time, last_active_time, install_count, created_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-            ''', (device_id, machine_id, platform, now, now, now))
-            
-            # 自动开通免费会员（永久有效）
-            cursor.execute('''
-                INSERT INTO memberships (device_id, tier, status, subscription_period, activated_at, expires_at, auto_renew, created_at, updated_at)
-                VALUES (?, ?, ?, NULL, ?, NULL, 0, ?, ?)
-            ''', (device_id, MembershipTier.FREE, MembershipStatus.ACTIVE, now, now, now))
-            
-            # 初始化月度消费记录
-            year = datetime.now().year
-            month = datetime.now().month
-            cursor.execute('''
-                INSERT INTO monthly_consumption (device_id, year, month, asr_duration_ms, llm_total_tokens, record_count, created_at, updated_at)
-                VALUES (?, ?, ?, 0, 0, 0, ?, ?)
-            ''', (device_id, year, month, now, now))
+                INSERT INTO devices (device_id, machine_id, platform, first_registered_at, last_active_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (device_id, machine_id, platform, now, now))
             
             conn.commit()
             
-            logger.info(f"[会员服务] ✅ 新设备已注册: {device_id}, 已开通免费永久会员")
+            logger.info(f"[会员服务] ✅ 新设备已注册: {device_id}")
             
-            # 返回会员信息
-            membership = self.get_membership(device_id)
             return {
                 'device_id': device_id,
                 'is_new': True,
-                'membership': membership
+                'machine_id': machine_id,
+                'platform': platform,
+                'first_registered_at': now,
+                'last_active_at': now
             }
             
         except Exception as e:
@@ -175,11 +157,53 @@ class MembershipService:
     
     # ==================== 会员信息管理 ====================
     
-    def get_membership(self, device_id: str) -> Optional[Dict[str, Any]]:
-        """获取会员信息
+    def create_membership(self, user_id: str, tier: str = MembershipTier.FREE) -> Dict[str, Any]:
+        """为用户创建会员（默认免费会员）
         
         Args:
-            device_id: 设备ID
+            user_id: 用户ID
+            tier: 会员等级（默认免费）
+        
+        Returns:
+            会员信息
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 检查会员是否已存在
+            cursor.execute('SELECT * FROM memberships WHERE user_id = ?', (user_id,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                logger.warning(f"[会员服务] 会员已存在: {user_id}")
+                return self.get_membership(user_id)
+            
+            # 创建会员
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute('''
+                INSERT INTO memberships (user_id, tier, status, subscription_period, activated_at, expires_at, auto_renew, created_at, updated_at)
+                VALUES (?, ?, ?, NULL, ?, NULL, 0, ?, ?)
+            ''', (user_id, tier, MembershipStatus.ACTIVE, now, now, now))
+            
+            conn.commit()
+            
+            logger.info(f"[会员服务] ✅ 会员已创建: user_id={user_id}, tier={tier}")
+            
+            return self.get_membership(user_id)
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"[会员服务] 创建会员失败: {e}", exc_info=True)
+            raise
+        finally:
+            conn.close()
+    
+    def get_membership(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户会员信息
+        
+        Args:
+            user_id: 用户ID
         
         Returns:
             会员信息字典，不存在时返回None
@@ -189,8 +213,8 @@ class MembershipService:
         
         try:
             cursor.execute('''
-                SELECT * FROM memberships WHERE device_id = ?
-            ''', (device_id,))
+                SELECT * FROM memberships WHERE user_id = ?
+            ''', (user_id,))
             
             row = cursor.fetchone()
             if not row:
@@ -208,7 +232,7 @@ class MembershipService:
                 if expires_at < now:
                     is_expired = True
                     # 自动降级到免费
-                    self._downgrade_to_free(device_id)
+                    self._downgrade_to_free(user_id)
                 else:
                     days_remaining = (expires_at - now).days
             else:
@@ -220,7 +244,7 @@ class MembershipService:
             quota = MembershipQuota.QUOTAS.get(row['tier'], {})
             
             return {
-                'device_id': device_id,
+                'user_id': user_id,
                 'tier': row['tier'],
                 'status': MembershipStatus.EXPIRED if is_expired else row['status'],
                 'subscription_period': row['subscription_period'],
@@ -238,7 +262,7 @@ class MembershipService:
         finally:
             conn.close()
     
-    def _downgrade_to_free(self, device_id: str) -> None:
+    def _downgrade_to_free(self, user_id: str) -> None:
         """自动降级到免费会员"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -248,20 +272,20 @@ class MembershipService:
             cursor.execute('''
                 UPDATE memberships
                 SET tier = ?, status = ?, expires_at = NULL, subscription_period = NULL, updated_at = ?
-                WHERE device_id = ?
-            ''', (MembershipTier.FREE, MembershipStatus.ACTIVE, now, device_id))
+                WHERE user_id = ?
+            ''', (MembershipTier.FREE, MembershipStatus.ACTIVE, now, user_id))
             conn.commit()
             
-            logger.info(f"[会员服务] 会员已过期，已自动降级到免费: {device_id}")
+            logger.info(f"[会员服务] 会员已过期，已自动降级到免费: user_id={user_id}")
             
         finally:
             conn.close()
     
-    def activate_membership(self, device_id: str, tier: str, months: int) -> Dict[str, Any]:
+    def activate_membership(self, user_id: str, tier: str, months: int) -> Dict[str, Any]:
         """激活/升级会员
         
         Args:
-            device_id: 设备ID
+            user_id: 用户ID
             tier: 会员等级（vip/pro/pro_plus）
             months: 订阅月数
         
@@ -273,9 +297,9 @@ class MembershipService:
         
         try:
             # 获取当前会员信息
-            current = self.get_membership(device_id)
+            current = self.get_membership(user_id)
             if not current:
-                raise ValueError(f"设备不存在: {device_id}")
+                raise ValueError(f"会员不存在: {user_id}")
             
             now = datetime.now()
             
@@ -300,22 +324,15 @@ class MembershipService:
             cursor.execute('''
                 UPDATE memberships
                 SET tier = ?, status = ?, subscription_period = ?, activated_at = ?, expires_at = ?, updated_at = ?
-                WHERE device_id = ?
-            ''', (tier, MembershipStatus.ACTIVE, months, now_str, expires_at_str, now_str, device_id))
-            
-            # 记录到历史
-            history_id = str(uuid.uuid4())
-            cursor.execute('''
-                INSERT INTO membership_history (id, device_id, from_tier, to_tier, subscription_period, activated_at, expires_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (history_id, device_id, current['tier'], tier, months, now_str, expires_at_str, now_str))
+                WHERE user_id = ?
+            ''', (tier, MembershipStatus.ACTIVE, months, now_str, expires_at_str, now_str, user_id))
             
             conn.commit()
             
-            logger.info(f"[会员服务] ✅ 会员已激活: {device_id}, {current['tier']} → {tier}, 有效期{months}个月")
+            logger.info(f"[会员服务] ✅ 会员已激活: user_id={user_id}, {current['tier']} → {tier}, 有效期{months}个月")
             
             # 返回更新后的会员信息
-            return self.get_membership(device_id)
+            return self.get_membership(user_id)
             
         except Exception as e:
             conn.rollback()
@@ -326,11 +343,12 @@ class MembershipService:
     
     # ==================== 消费统计 ====================
     
-    def get_current_consumption(self, device_id: str) -> Dict[str, Any]:
+    def get_current_consumption(self, user_id: str, device_id: Optional[str] = None) -> Dict[str, Any]:
         """获取当前月度消费情况
         
         Args:
-            device_id: 设备ID
+            user_id: 用户ID
+            device_id: 设备ID（可选，如果提供则只统计该设备）
         
         Returns:
             消费统计信息
@@ -342,32 +360,44 @@ class MembershipService:
             year = datetime.now().year
             month = datetime.now().month
             
-            # 获取月度汇总
+            # 获取月度汇总（按user_id汇总，不区分device_id）
+            # device_id仅用于查询该设备的消费明细（从consumption_records表）
             cursor.execute('''
                 SELECT * FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
+                WHERE user_id = ? AND year = ? AND month = ?
+            ''', (user_id, year, month))
             
             row = cursor.fetchone()
             if not row:
-                # 没有记录，创建初始记录
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute('''
-                    INSERT INTO monthly_consumption (device_id, year, month, asr_duration_ms, llm_total_tokens, record_count, created_at, updated_at)
-                    VALUES (?, ?, ?, 0, 0, 0, ?, ?)
-                ''', (device_id, year, month, now, now))
-                conn.commit()
-                
+                # 没有记录
                 asr_used = 0
                 llm_used = 0
             else:
-                asr_used = row['asr_duration_ms']
-                llm_used = row['llm_total_tokens']
+                asr_used = row['asr_duration_ms'] or 0
+                llm_used = row['llm_total_tokens'] or 0
+            
+            # 如果指定了device_id，查询该设备的消费明细（从consumption_records表）
+            device_detail = None
+            if device_id:
+                cursor.execute('''
+                    SELECT 
+                        SUM(CASE WHEN type = 'asr' THEN amount ELSE 0 END) as asr_ms,
+                        SUM(CASE WHEN type = 'llm' THEN amount ELSE 0 END) as llm_tokens
+                    FROM consumption_records
+                    WHERE user_id = ? AND device_id = ? AND year = ? AND month = ?
+                ''', (user_id, device_id, year, month))
+                detail_row = cursor.fetchone()
+                if detail_row:
+                    device_detail = {
+                        'device_id': device_id,
+                        'asr_used_ms': int(detail_row[0] or 0),
+                        'llm_used_tokens': int(detail_row[1] or 0)
+                    }
             
             # 获取会员信息（获取额度限制）
-            membership = self.get_membership(device_id)
+            membership = self.get_membership(user_id)
             if not membership:
-                raise ValueError(f"会员信息不存在: {device_id}")
+                raise ValueError(f"会员信息不存在: {user_id}")
             
             quota = membership['quota']
             asr_limit = quota.get('asr_duration_ms_monthly', 0)
@@ -385,6 +415,8 @@ class MembershipService:
             next_month = (datetime.now().replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             
             return {
+                'user_id': user_id,
+                'device_id': device_id,
                 'year': year,
                 'month': month,
                 'asr': {
@@ -406,11 +438,11 @@ class MembershipService:
         finally:
             conn.close()
     
-    def check_quota(self, device_id: str, consumption_type: str, estimated_amount: int, model_source: str = 'vendor') -> Dict[str, Any]:
+    def check_quota(self, user_id: str, consumption_type: str, estimated_amount: int, model_source: str = 'vendor') -> Dict[str, Any]:
         """检查额度是否足够
         
         Args:
-            device_id: 设备ID
+            user_id: 用户ID
             consumption_type: 消费类型（'asr'或'llm'）
             estimated_amount: 预估消费量
             model_source: 模型来源（'vendor'或'user'），仅LLM有效
@@ -423,7 +455,7 @@ class MembershipService:
             return {'allowed': True, 'reason': '用户自备模型，不限额度'}
         
         # 获取会员信息
-        membership = self.get_membership(device_id)
+        membership = self.get_membership(user_id)
         if not membership:
             return {'allowed': False, 'reason': '会员信息不存在'}
         
@@ -432,7 +464,7 @@ class MembershipService:
             return {'allowed': False, 'reason': '会员已过期，请续费'}
         
         # 获取当前消费
-        consumption = self.get_current_consumption(device_id)
+        consumption = self.get_current_consumption(user_id)
         
         # 检查额度
         if consumption_type == 'asr':
@@ -461,4 +493,3 @@ class MembershipService:
             MembershipTier.PRO_PLUS: 'PRO+会员'
         }
         return names.get(tier, '未知')
-

@@ -7,7 +7,6 @@ import { KnowledgeBase } from './components/apps/KnowledgeBase/KnowledgeBase';
 import { MembershipContainer } from './components/apps/Membership/MembershipContainer';
 import { HistoryView } from './components/shared/HistoryView';
 import { SettingsView } from './components/shared/SettingsView';
-import { AboutView } from './components/shared/AboutView';
 import { Toast } from './components/shared/Toast';
 import { ErrorBanner, ErrorToast } from './components/shared/SystemErrorDisplay';
 import { SystemErrorInfo, ErrorCodes, ErrorCategory } from './utils/errorCodes';
@@ -38,6 +37,8 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [appFilter, setAppFilter] = useState<'all' | 'voice-note' | 'smart-chat' | 'voice-zen'>('all');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning'; duration?: number } | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [membershipInitialTab, setMembershipInitialTab] = useState<'info' | 'activation' | 'profile'>('info');
   
   // 工作状态管理
   const [activeWorkingApp, setActiveWorkingApp] = useState<AppView | null>(null);
@@ -120,6 +121,110 @@ function App() {
     }
   }, [currentWorkingRecordId, workSessionState]);
   
+  // 应用启动时：初始化用户ID（等待 API 连接就绪后）
+  useEffect(() => {
+    if (!apiConnected) {
+      console.log('[App] 等待 API 连接...');
+      return;
+    }
+
+    const initializeUserId = async () => {
+      console.log('[App] API 已连接，开始初始化用户ID...');
+      
+      try {
+        // 获取 device_id
+        const deviceInfo = await window.electronAPI?.getDeviceInfo();
+        if (!deviceInfo || !deviceInfo.deviceId) {
+          console.error('[App] 无法获取设备信息');
+          return;
+        }
+
+        const deviceId = deviceInfo.deviceId;
+        console.log('[App] Device ID:', deviceId);
+
+        // 检查是否已有用户
+        const response = await fetch(`${API_BASE_URL}/api/user/profile/${deviceId}`);
+        const data = await response.json();
+
+        if (data.success && data.data && data.data.user_id) {
+          // 用户已存在
+          setUserId(data.data.user_id);
+          console.log('[App] ✅ 用户已存在:', data.data.user_id);
+        } else {
+          // 用户不存在，自动创建
+          console.log('[App] 用户不存在，开始创建...');
+          
+          const createResponse = await fetch(`${API_BASE_URL}/api/user/profile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              device_id: deviceId,
+              nickname: '新用户',
+            }),
+          });
+
+          const createData = await createResponse.json();
+          console.log('[App] 创建用户响应:', createData);
+          console.log('[App] 响应详情:', {
+            success: createData.success,
+            hasData: !!createData.data,
+            data: createData.data,
+            error: createData.error
+          });
+          
+          if (createData.success && createData.data && createData.data.user_id) {
+            const newUserId = createData.data.user_id;
+            setUserId(newUserId);
+            
+            console.log('[App] ✅ 已创建新用户:', newUserId);
+            
+            // 显示重要提示并跳转到个人资料页面（延迟2秒确保页面已完全加载）
+            setTimeout(() => {
+              console.log('[App] 显示用户ID提示并跳转到个人资料页面...');
+              
+              // 设置会员页面初始标签为"个人资料"
+              setMembershipInitialTab('profile');
+              
+              // 跳转到会员应用
+              setActiveView('membership');
+              
+              // 显示提示
+              setToast({
+                message: `✅ 已为您创建用户ID并跳转到个人资料页面\n📋 ${newUserId}\n⚠️ 请妥善保管，不要泄露！`,
+                type: 'warning',
+                duration: 10000,
+              });
+            }, 2000);
+          } else {
+            console.error('[App] 创建用户失败:', {
+              success: createData.success,
+              hasData: !!createData.data,
+              hasUserId: createData.data?.user_id,
+              error: createData.error,
+              fullResponse: createData
+            });
+          }
+        }
+      } catch (error) {
+        console.error('[App] 初始化用户ID失败:', error);
+      }
+    };
+
+    // 延迟500ms执行，确保 API 完全就绪
+    const timer = setTimeout(() => {
+      initializeUserId();
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [apiConnected]);  // 依赖 apiConnected
+
+  // 当离开会员页面时，重置初始标签为"会员信息"
+  useEffect(() => {
+    if (activeView !== 'membership') {
+      setMembershipInitialTab('info');
+    }
+  }, [activeView]);
+
   // 应用启动时恢复状态
   useEffect(() => {
     const savedRecordId = localStorage.getItem('currentWorkingRecordId');
@@ -1208,7 +1313,7 @@ function App() {
         )}
 
         {activeView === 'membership' && (
-          <MembershipContainer />
+          <MembershipContainer initialTab={membershipInitialTab} />
         )}
 
         {activeView === 'history' && (
@@ -1226,8 +1331,6 @@ function App() {
         )}
 
         {activeView === 'settings' && <SettingsView apiConnected={apiConnected} />}
-
-        {activeView === 'about' && <AboutView />}
       </div>
 
       {toast && (

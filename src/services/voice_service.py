@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 try:
     from .consumption_service import ConsumptionService
     from .membership_service import MembershipService
+    from ..providers.storage.user_storage import UserStorageService
     MEMBERSHIP_AVAILABLE = True
 except ImportError:
     MEMBERSHIP_AVAILABLE = False
@@ -41,6 +42,7 @@ class VoiceService:
         # 会员服务（用于额度检查和消费记录）
         self.consumption_service: Optional[ConsumptionService] = None
         self.membership_service: Optional[MembershipService] = None
+        self.user_storage: Optional[UserStorageService] = None
         self._device_id: Optional[str] = None  # 设备ID（从Electron传入）
         
         self._on_text_callback: Optional[Callable[[str, bool, dict], None]] = None
@@ -76,11 +78,20 @@ class VoiceService:
             self.membership_service = MembershipService(self.config)
             self.consumption_service = ConsumptionService(self.config)
             
+            # 初始化用户存储服务（用于通过device_id获取user_id）
+            from pathlib import Path
+            storage_config = self.config.get('storage', {})
+            data_dir = Path(storage_config.get('data_dir', '~/Library/Application Support/MindVoice')).expanduser()
+            database = storage_config.get('database', 'database/history.db')
+            db_path = data_dir / database
+            self.user_storage = UserStorageService(str(db_path))
+            
             logger.info("[语音服务] ✅ 会员服务初始化成功")
         except Exception as e:
             logger.error(f"[语音服务] 会员服务初始化失败: {e}", exc_info=True)
             self.membership_service = None
             self.consumption_service = None
+            self.user_storage = None
     
     def set_device_id(self, device_id: str):
         """设置设备ID（由主进程调用）"""
@@ -88,21 +99,39 @@ class VoiceService:
         logger.info(f"[语音服务] 设备ID已设置: {device_id[:16]}...")
     
     def _check_asr_quota(self) -> bool:
-        """检查ASR额度是否充足"""
-        if not MEMBERSHIP_AVAILABLE or not self.consumption_service or not self._device_id:
+        """检查ASR额度是否充足（以user_id为主）"""
+        if not MEMBERSHIP_AVAILABLE or not self.membership_service or not self._device_id:
             # 会员服务不可用时，不限制使用
             return True
         
         try:
+            # 获取user_id
+            user_id = None
+            if self.user_storage:
+                try:
+                    user_info = self.user_storage.get_user_by_device(self._device_id)
+                    if user_info:
+                        user_id = user_info['user_id']
+                except Exception as e:
+                    logger.error(f"[语音服务] 获取user_id失败: {e}", exc_info=True)
+            
+            if not user_id:
+                logger.warning(f"[语音服务] 无法获取user_id，跳过ASR额度检查: device_id={self._device_id}")
+                return True  # 无法获取user_id时允许使用（避免误拦截）
+            
             # 检查ASR额度（预留1分钟 = 60000ms）
             required_ms = 60000
-            result = self.consumption_service.check_asr_quota(self._device_id, required_ms)
+            result = self.membership_service.check_quota(
+                user_id=user_id,
+                consumption_type='asr',
+                estimated_amount=required_ms
+            )
             
-            if not result['has_quota']:
-                logger.warning(f"[语音服务] ASR额度不足: 已用 {result['used_ms']/1000:.1f}s / {result['quota_ms']/1000:.1f}s")
+            if not result.get('allowed', False):
+                logger.warning(f"[语音服务] ASR额度不足: {result.get('reason', '未知原因')}")
                 return False
             
-            logger.info(f"[语音服务] ASR额度检查通过: 已用 {result['used_ms']/1000:.1f}s / {result['quota_ms']/1000:.1f}s")
+            logger.info(f"[语音服务] ASR额度检查通过: user_id={user_id[:8]}...")
             return True
         except Exception as e:
             logger.error(f"[语音服务] ASR额度检查失败: {e}", exc_info=True)
@@ -127,8 +156,23 @@ class VoiceService:
                 logger.warning(f"[语音服务] ASR消费时长异常: {duration_ms}ms")
                 return
             
+            # 获取user_id
+            user_id = None
+            if self.user_storage and self._device_id:
+                try:
+                    user_info = self.user_storage.get_user_by_device(self._device_id)
+                    if user_info:
+                        user_id = user_info['user_id']
+                except Exception as e:
+                    logger.error(f"[语音服务] 获取user_id失败: {e}", exc_info=True)
+            
+            if not user_id:
+                logger.warning(f"[语音服务] 无法获取user_id，跳过ASR消费记录: device_id={self._device_id}")
+                return
+            
             # 记录消费
             self.consumption_service.record_asr_consumption(
+                user_id=user_id,
                 device_id=self._device_id,
                 duration_ms=duration_ms,
                 start_time=self._asr_session_start_time,

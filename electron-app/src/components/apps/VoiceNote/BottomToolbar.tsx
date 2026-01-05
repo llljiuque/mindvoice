@@ -50,8 +50,8 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
   return (
     <div className="bottom-toolbar">
       <div className="bottom-toolbar-content">
-        {/* 左侧：ASR控制按钮（圆形图标） */}
-        <div className="bottom-toolbar-left">
+        {/* 顶部：ASR控制按钮（居中，突出显示） */}
+        <div className="bottom-toolbar-asr">
           {apiConnected && (
             <>
               {asrState === 'idle' && onAsrStart && (
@@ -90,8 +90,8 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
           )}
         </div>
 
-        {/* 中间：内容操作按钮 */}
-        <div className="bottom-toolbar-center">
+        {/* 底部：内容操作按钮 */}
+        <div className="bottom-toolbar-actions">
           <AppButton
             onClick={onCopy}
             disabled={!hasContent}

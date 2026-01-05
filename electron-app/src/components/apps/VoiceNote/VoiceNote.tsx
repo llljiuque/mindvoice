@@ -578,10 +578,14 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
           status={asrState}
         />
       }
-      actions={
-        <>
+      actions={null}
+    >
+      {showWelcome ? (
+        <WelcomeScreen onStartWork={handleStartWork} />
+      ) : (
+        <div className="voice-note-content">
           {isWorkSessionActive && (
-            <>
+            <div className="voice-note-top-toolbar">
               <LanguageSelector
                 value={selectedLanguage}
                 onChange={handleLanguageChange}
@@ -612,15 +616,9 @@ export const VoiceNote: React.FC<VoiceNoteProps> = ({
               >
                 EXIT
               </AppButton>
-            </>
+            </div>
           )}
-        </>
-      }
-    >
-      {showWelcome ? (
-        <WelcomeScreen onStartWork={handleStartWork} />
-      ) : (
-        <div className="voice-note-content">
+          
           <BlockEditor
             initialBlocks={initialBlocks}
             onContentChange={handleContentChange}

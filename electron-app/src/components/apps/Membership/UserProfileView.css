@@ -1,25 +1,27 @@
 /* 用户信息管理界面样式 */
 
 .user-profile-view {
-  padding: 24px;
-  max-width: 600px;
+  padding: 18px 24px;
+  max-width: 800px;
   margin: 0 auto;
+  overflow-y: auto;
+  height: 100%;
+  background: #f5f7fa;
 }
 
 .profile-header {
-  margin-bottom: 32px;
-  text-align: center;
+  margin-bottom: 18px;
 }
 
 .profile-header h2 {
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 600;
   color: #1a1a1a;
   margin: 0 0 8px 0;
 }
 
 .profile-header .subtitle {
-  font-size: 14px;
+  font-size: 14.5px;
   color: #666;
   margin: 0;
 }
@@ -34,17 +36,17 @@
 .profile-form {
   background: #fff;
   border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  padding: 22px 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
 .form-group {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .form-group label {
   display: block;
-  font-size: 14px;
+  font-size: 14.5px;
   font-weight: 500;
   color: #333;
   margin-bottom: 8px;
@@ -77,15 +79,86 @@
   margin: 4px 0 0 0;
 }
 
+/* 用户ID字段 */
+.user-id-group {
+  background: #f8f9fa;
+  border-radius: 9px;
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  border: 1px solid #e9ecef;
+}
+
+.user-id-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-id-input {
+  flex: 1;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid #ddd;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: #333;
+  cursor: default;
+}
+
+.user-id-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+}
+
+.btn-toggle-visibility,
+.btn-copy-id {
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+  min-width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-toggle-visibility:hover,
+.btn-copy-id:hover {
+  background: #f5f5f5;
+  border-color: #4a90e2;
+}
+
+.btn-toggle-visibility:active,
+.btn-copy-id:active {
+  transform: scale(0.95);
+}
+
+.security-hint {
+  color: #ff9800 !important;
+  font-weight: 500;
+  margin-top: 8px;
+}
+
 /* 头像上传 */
 .avatar-group {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .avatar-upload {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 20px;
+}
+
+.avatar-preview-label {
+  display: block;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .avatar-preview {
@@ -94,13 +167,21 @@
   border-radius: 50%;
   overflow: hidden;
   border: 2px solid #e0e0e0;
-  flex-shrink: 0;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.avatar-preview:hover {
+  border-color: #4a90e2;
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(74, 144, 226, 0.2);
 }
 
 .avatar-preview img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
 }
 
 .avatar-placeholder {
@@ -118,50 +199,68 @@
   color: #fff;
 }
 
+.avatar-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.avatar-preview:hover .avatar-overlay {
+  opacity: 1;
+}
+
+.avatar-overlay-text {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .avatar-actions {
   flex: 1;
-}
-
-.btn-upload {
-  display: inline-block;
-  padding: 8px 16px;
-  background: #4a90e2;
-  color: #fff;
-  border-radius: 6px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.btn-upload:hover {
-  background: #357abd;
+  padding-top: 8px;
 }
 
 /* 保存按钮 */
 .form-actions {
-  margin-top: 32px;
+  margin-top: 24px;
   text-align: center;
 }
 
 .btn-save {
   padding: 12px 48px;
-  background: #4a90e2;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   border: none;
-  border-radius: 6px;
-  font-size: 16px;
-  font-weight: 500;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
 .btn-save:hover:not(:disabled) {
-  background: #357abd;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.btn-save:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .btn-save:disabled {
   background: #ccc;
   cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 /* 消息提示 */
@@ -186,39 +285,36 @@
 }
 
 /* 账户信息 */
-.account-info {
-  margin-top: 32px;
-  padding: 20px;
+/* 简化的账户信息区域（只显示时间信息） */
+.account-info-simple {
+  margin-top: 20px;
+  padding: 16px 18px;
   background: #f8f9fa;
-  border-radius: 8px;
+  border-radius: 9px;
+  border: 1px solid #e9ecef;
 }
 
-.account-info h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: #333;
-  margin: 0 0 16px 0;
-}
-
-.info-item {
+.info-row {
   display: flex;
   justify-content: space-between;
-  padding: 8px 0;
+  padding: 10px 0;
   border-bottom: 1px solid #e0e0e0;
 }
 
-.info-item:last-child {
+.info-row:last-child {
   border-bottom: none;
 }
 
-.info-item .label {
-  font-size: 14px;
-  color: #666;
+.info-row .label {
+  font-size: 13.5px;
+  color: #718096;
+  font-weight: 500;
 }
 
-.info-item .value {
-  font-size: 14px;
-  color: #333;
+.info-row .value {
+  font-size: 13.5px;
+  color: #2d3748;
   font-family: 'Monaco', 'Courier New', monospace;
+  font-weight: 500;
 }
 

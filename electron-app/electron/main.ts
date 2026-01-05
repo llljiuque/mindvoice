@@ -938,13 +938,15 @@ app.whenReady().then(async () => {
       // 注册设备到后端
       updateSplashStatus('注册设备...', 15);
       try {
-        const response = await fetch(`${API_URL}/api/device/register`, {
+        const response = await fetch(`${API_URL}/api/user/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             device_id: deviceInfo.deviceId,
             machine_id: deviceInfo.machineId,
             platform: deviceInfo.platform,
+            nickname: '新用户',
+            device_name: 'MacBook Pro'
           }),
           signal: AbortSignal.timeout(5000),
         });

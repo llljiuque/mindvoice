@@ -37,6 +37,9 @@ from src.utils.audio_recorder import SoundDeviceRecorder
 from src.agents import SummaryAgent, SmartChatAgent
 from src.agents.translation_agent import TranslationAgent
 from src.api.membership_api import router as membership_router, init_membership_services
+from src.api.user_api import router as user_router, init_user_service
+from src.api import user_api
+from src.api.tag_api import router as tag_router, init_tag_service
 
 logger = get_logger("API")
 
@@ -48,6 +51,8 @@ async def lifespan(app: FastAPI):
     setup_llm_service()
     setup_cleanup_service()
     setup_membership_services()
+    setup_user_service()
+    setup_tag_service()
     
     # 在异步上下文中启动知识库模型的后台加载
     global knowledge_service
@@ -107,6 +112,12 @@ app.add_middleware(
 # 注册会员体系API路由
 app.include_router(membership_router)
 
+# 注册用户管理API路由
+app.include_router(user_router)
+
+# 注册标签管理API路由
+app.include_router(tag_router)
+
 # 全局服务实例
 voice_service: Optional[VoiceService] = None
 llm_service: Optional[LLMService] = None
@@ -118,6 +129,18 @@ translation_agent: Optional[TranslationAgent] = None
 cleanup_service: Optional[CleanupService] = None
 config: Optional[Config] = None
 recorder: Optional[SoundDeviceRecorder] = None
+
+
+def get_user_id_by_device(device_id: str) -> Optional[str]:
+    """通过device_id获取user_id"""
+    if not device_id or not user_api.user_storage:
+        return None
+    try:
+        user_info = user_api.user_storage.get_user_by_device(device_id)
+        return user_info['user_id'] if user_info else None
+    except Exception as e:
+        logger.error(f"[API] 获取user_id失败: {e}", exc_info=True)
+        return None
 
 # WebSocket连接管理（单连接模式）
 current_connection: Optional[WebSocket] = None
@@ -408,6 +431,42 @@ def setup_membership_services():
         logger.info("[API] 会员服务初始化完成")
     except Exception as e:
         logger.error(f"[API] 会员服务初始化失败: {e}")
+
+
+def setup_user_service():
+    """初始化用户服务"""
+    global config
+    
+    logger.info("[API] 初始化用户服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化用户管理服务
+        init_user_service(config)
+        
+        logger.info("[API] 用户服务初始化完成")
+    except Exception as e:
+        logger.error(f"[API] 用户服务初始化失败: {e}")
+
+
+def setup_tag_service():
+    """初始化标签服务"""
+    global config
+    
+    logger.info("[API] 初始化标签服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化标签管理服务
+        init_tag_service(config)
+        
+        logger.info("[API] 标签服务初始化完成")
+    except Exception as e:
+        logger.error(f"[API] 标签服务初始化失败: {e}")
         # 不抛出异常，允许应用继续运行
 
 
@@ -592,36 +651,6 @@ async def get_device_id():
     return {"success": True, "device_id": device_id}
 
 
-@app.get("/api/consumption/monthly/{device_id}")
-async def get_monthly_consumption(device_id: str, year: int, month: int):
-    """获取指定月份的消费统计
-    
-    Args:
-        device_id: 设备ID
-        year: 年份（查询参数）
-        month: 月份（查询参数）
-    
-    Returns:
-        包含ASR和LLM消费统计的响应
-    """
-    global consumption_service
-    
-    try:
-        if not consumption_service:
-            raise HTTPException(status_code=500, detail="消费服务未初始化")
-        
-        # 获取月度消费统计
-        stats = consumption_service.get_monthly_consumption(device_id, year, month)
-        
-        return {
-            "success": True,
-            "data": stats
-        }
-    except Exception as e:
-        logger.error(f"[API] 获取月度消费失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 class StartRecordingRequest(BaseModel):
     """开始录音请求"""
     app_id: Optional[str] = None  # 应用ID: 'voice-note', 'smart-chat', 'voice-zen'
@@ -761,8 +790,8 @@ class SaveTextRequest(BaseModel):
     """直接保存文本请求"""
     text: str
     app_type: str = 'voice-note'
-    blocks: Optional[list] = None
-    metadata: Optional[dict] = None  # 完整的metadata（包含blocks, noteInfo等）
+    metadata: dict  # 完整的metadata（包含blocks, noteInfo等，必需字段）
+    device_id: Optional[str] = None  # 设备ID，用于关联用户
 
 
 class SaveTextResponse(BaseModel):
@@ -803,34 +832,39 @@ async def save_text_directly(request: SaveTextRequest):
                 error=error_info.to_dict()
             )
         
-        # 构建 metadata
-        # 优先使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
-        if request.metadata:
-            # 前端传来了完整的 metadata，直接使用
-            metadata = request.metadata
-            # 确保包含必要的系统字段
-            if 'language' not in metadata:
-                metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
-            if 'provider' not in metadata:
-                metadata['provider'] = 'manual'
-            if 'input_method' not in metadata:
-                metadata['input_method'] = 'keyboard'
-            if 'app_type' not in metadata:
-                metadata['app_type'] = request.app_type
-            if 'created_at' not in metadata:
-                metadata['created_at'] = voice_service._get_timestamp()
-        else:
-            # 降级：使用旧的 blocks 字段（向后兼容）
-            metadata = {
-                'language': voice_service.config.get('asr.language', 'zh-CN'),
-                'provider': 'manual',
-                'input_method': 'keyboard',
-                'app_type': request.app_type,
-                'created_at': voice_service._get_timestamp(),
-                'blocks': request.blocks
-            }
+        # 获取 user_id 和 device_id
+        user_id = None
+        device_id_to_use = request.device_id or device_id  # 优先使用请求中的，否则使用全局的
         
-        record_id = voice_service.storage_provider.save_record(request.text, metadata)
+        if device_id_to_use:
+            user_id = get_user_id_by_device(device_id_to_use)
+            if not user_id:
+                logger.warning(f"[API] 无法获取user_id: device_id={device_id_to_use}")
+        
+        # 构建 metadata
+        # 使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
+        if not request.metadata:
+            raise HTTPException(status_code=400, detail="metadata 字段是必需的")
+        
+        metadata = request.metadata
+        # 确保包含必要的系统字段
+        if 'language' not in metadata:
+            metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
+        if 'provider' not in metadata:
+            metadata['provider'] = 'manual'
+        if 'input_method' not in metadata:
+            metadata['input_method'] = 'keyboard'
+        if 'app_type' not in metadata:
+            metadata['app_type'] = request.app_type
+        if 'created_at' not in metadata:
+            metadata['created_at'] = voice_service._get_timestamp()
+        
+        record_id = voice_service.storage_provider.save_record(
+            request.text, 
+            metadata,
+            user_id=user_id,
+            device_id=device_id_to_use
+        )
         
         # 日志：显示保存的数据结构
         has_blocks = bool(metadata.get('blocks'))
@@ -917,30 +951,21 @@ async def update_record(record_id: str, request: SaveTextRequest):
             )
         
         # 构建更新的 metadata
-        # 优先使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
-        if request.metadata:
-            # 前端传来了完整的 metadata，直接使用
-            metadata = request.metadata
-            # 确保包含必要的系统字段
-            if 'language' not in metadata:
-                metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
-            if 'provider' not in metadata:
-                metadata['provider'] = 'manual'
-            if 'input_method' not in metadata:
-                metadata['input_method'] = 'keyboard'
-            if 'app_type' not in metadata:
-                metadata['app_type'] = request.app_type
-            metadata['updated_at'] = voice_service._get_timestamp()
-        else:
-            # 降级：使用旧的 blocks 字段（向后兼容）
-            metadata = {
-                'language': voice_service.config.get('asr.language', 'zh-CN'),
-                'provider': 'manual',
-                'input_method': 'keyboard',
-                'app_type': request.app_type,
-                'updated_at': voice_service._get_timestamp(),
-                'blocks': request.blocks,
-            }
+        # 使用前端传来的完整 metadata（包含 blocks, noteInfo, trigger 等）
+        if not request.metadata:
+            raise HTTPException(status_code=400, detail="metadata 字段是必需的")
+        
+        metadata = request.metadata
+        # 确保包含必要的系统字段
+        if 'language' not in metadata:
+            metadata['language'] = voice_service.config.get('asr.language', 'zh-CN')
+        if 'provider' not in metadata:
+            metadata['provider'] = 'manual'
+        if 'input_method' not in metadata:
+            metadata['input_method'] = 'keyboard'
+        if 'app_type' not in metadata:
+            metadata['app_type'] = request.app_type
+        metadata['updated_at'] = voice_service._get_timestamp()
         
         # 更新记录
         success = voice_service.storage_provider.update_record(record_id, request.text, metadata)
@@ -1014,13 +1039,19 @@ async def update_record(record_id: str, request: SaveTextRequest):
 
 
 @app.get("/api/records", response_model=ListRecordsResponse)
-async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
+async def list_records(
+    limit: int = 50, 
+    offset: int = 0, 
+    app_type: str = None,
+    device_id: str = None
+):
     """列出历史记录
     
     Args:
         limit: 返回记录数量限制
         offset: 偏移量
         app_type: 应用类型筛选（可选）：'voice-note', 'smart-chat', 'voice-zen', 'all'
+        device_id: 设备ID，用于按用户筛选（可选）
     """
     if not voice_service or not voice_service.storage_provider:
         error_info = SystemErrorInfo(
@@ -1038,24 +1069,38 @@ async def list_records(limit: int = 50, offset: int = 0, app_type: str = None):
         )
     
     try:
+        # 获取 user_id
+        user_id = None
+        device_id_to_use = device_id or globals().get('device_id')  # 使用请求参数或全局变量
+        
+        if device_id_to_use:
+            user_id = get_user_id_by_device(device_id_to_use)
+            if not user_id:
+                logger.warning(f"[API] 无法获取user_id: device_id={device_id_to_use}")
+        
         # 'all' 表示查询所有类型
         filter_app_type = None if app_type == 'all' or not app_type else app_type
         
         records = voice_service.storage_provider.list_records(
             limit=limit, 
             offset=offset,
-            app_type=filter_app_type
+            app_type=filter_app_type,
+            user_id=user_id  # 按用户筛选
         )
         
         # 使用count_records方法优化总数计算
         if hasattr(voice_service.storage_provider, 'count_records'):
-            total = voice_service.storage_provider.count_records(app_type=filter_app_type)
+            total = voice_service.storage_provider.count_records(
+                app_type=filter_app_type,
+                user_id=user_id  # 按用户计数
+            )
         else:
             # 降级方案：如果存储提供者不支持count，使用旧方法
             all_records = voice_service.storage_provider.list_records(
                 limit=10000, 
                 offset=0,
-                app_type=filter_app_type
+                app_type=filter_app_type,
+                user_id=user_id  # 按用户筛选
             )
             total = len(all_records)
         
@@ -1754,16 +1799,21 @@ async def chat(request: ChatRequest):
         # 记录LLM消费（如果提供了device_id）
         if device_id and consumption_service and llm_service.llm_provider:
             try:
-                usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
-                if usage:
-                    consumption_service.record_llm_consumption(
-                        device_id=device_id,
-                        prompt_tokens=usage.get('prompt_tokens', 0),
-                        completion_tokens=usage.get('completion_tokens', 0),
-                        total_tokens=usage.get('total_tokens', 0),
-                        model=llm_service.llm_provider._config.get('model', 'unknown')
-                    )
-                    logger.info(f"[API] ✅ LLM消费已记录: {usage['total_tokens']} tokens")
+                user_id = get_user_id_by_device(device_id)
+                if not user_id:
+                    logger.warning(f"[API] 无法获取user_id，跳过LLM消费记录: device_id={device_id}")
+                else:
+                    usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
+                    if usage:
+                        consumption_service.record_llm_consumption(
+                            user_id=user_id,
+                            device_id=device_id,
+                            prompt_tokens=usage.get('prompt_tokens', 0),
+                            completion_tokens=usage.get('completion_tokens', 0),
+                            total_tokens=usage.get('total_tokens', 0),
+                            model=llm_service.llm_provider._config.get('model', 'unknown')
+                        )
+                        logger.info(f"[API] ✅ LLM消费已记录: user_id={user_id}, {usage['total_tokens']} tokens")
             except Exception as e:
                 logger.error(f"[API] 记录LLM消费失败: {e}", exc_info=True)
         
@@ -2214,19 +2264,24 @@ async def smart_chat(request: SmartChatRequest):
                     logger.info(f"[SmartChat] 准备记录LLM消费: device_id={request.device_id}, consumption_service={consumption_service is not None}, llm_service={llm_service is not None}")
                     if request.device_id and consumption_service and llm_service and llm_service.llm_provider:
                         try:
-                            usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
-                            logger.info(f"[SmartChat] 获取usage: {usage}")
-                            if usage:
-                                consumption_service.record_llm_consumption(
-                                    device_id=request.device_id,
-                                    prompt_tokens=usage.get('prompt_tokens', 0),
-                                    completion_tokens=usage.get('completion_tokens', 0),
-                                    total_tokens=usage.get('total_tokens', 0),
-                                    model=llm_service.llm_provider._config.get('model', 'unknown'),
-                                    provider=llm_service.llm_provider._config.get('provider', 'unknown'),
-                                    model_source='vendor'
-                                )
-                                logger.info(f"[SmartChat] ✅ LLM消费已记录: {usage['total_tokens']} tokens")
+                            user_id = get_user_id_by_device(request.device_id)
+                            if not user_id:
+                                logger.warning(f"[SmartChat] 无法获取user_id，跳过LLM消费记录: device_id={request.device_id}")
+                            else:
+                                usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
+                                logger.info(f"[SmartChat] 获取usage: {usage}")
+                                if usage:
+                                    consumption_service.record_llm_consumption(
+                                        user_id=user_id,
+                                        device_id=request.device_id,
+                                        prompt_tokens=usage.get('prompt_tokens', 0),
+                                        completion_tokens=usage.get('completion_tokens', 0),
+                                        total_tokens=usage.get('total_tokens', 0),
+                                        model=llm_service.llm_provider._config.get('model', 'unknown'),
+                                        provider=llm_service.llm_provider._config.get('provider', 'unknown'),
+                                        model_source='vendor'
+                                    )
+                                    logger.info(f"[SmartChat] ✅ LLM消费已记录: user_id={user_id}, {usage['total_tokens']} tokens")
                         except Exception as e:
                             logger.error(f"[SmartChat] 记录LLM消费失败: {e}", exc_info=True)
                     
@@ -2262,18 +2317,23 @@ async def smart_chat(request: SmartChatRequest):
             # 记录LLM消费（如果提供了device_id）
             if request.device_id and consumption_service and llm_service and llm_service.llm_provider:
                 try:
-                    usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
-                    if usage:
-                        consumption_service.record_llm_consumption(
-                            device_id=request.device_id,
-                            prompt_tokens=usage.get('prompt_tokens', 0),
-                            completion_tokens=usage.get('completion_tokens', 0),
-                            total_tokens=usage.get('total_tokens', 0),
-                            model=llm_service.llm_provider._config.get('model', 'unknown'),
-                            provider=llm_service.llm_provider._config.get('provider', 'unknown'),
-                            model_source='vendor'
-                        )
-                        logger.info(f"[SmartChat] ✅ LLM消费已记录: {usage['total_tokens']} tokens")
+                    user_id = get_user_id_by_device(request.device_id)
+                    if not user_id:
+                        logger.warning(f"[SmartChat] 无法获取user_id，跳过LLM消费记录: device_id={request.device_id}")
+                    else:
+                        usage = llm_service.llm_provider.get_last_usage() if hasattr(llm_service.llm_provider, 'get_last_usage') else None
+                        if usage:
+                            consumption_service.record_llm_consumption(
+                                user_id=user_id,
+                                device_id=request.device_id,
+                                prompt_tokens=usage.get('prompt_tokens', 0),
+                                completion_tokens=usage.get('completion_tokens', 0),
+                                total_tokens=usage.get('total_tokens', 0),
+                                model=llm_service.llm_provider._config.get('model', 'unknown'),
+                                provider=llm_service.llm_provider._config.get('provider', 'unknown'),
+                                model_source='vendor'
+                            )
+                            logger.info(f"[SmartChat] ✅ LLM消费已记录: user_id={user_id}, {usage['total_tokens']} tokens")
                 except Exception as e:
                     logger.error(f"[SmartChat] 记录LLM消费失败: {e}", exc_info=True)
             

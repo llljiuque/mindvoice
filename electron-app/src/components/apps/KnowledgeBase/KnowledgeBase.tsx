@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { AppLayout } from '../../shared/AppLayout';
 import './KnowledgeBase.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765';
@@ -134,17 +135,14 @@ export const KnowledgeBase: React.FC = () => {
   );
 
   return (
-    <div className="knowledge-view">
-      <div className="knowledge-container">
-        <div className="knowledge-header">
-          <div className="knowledge-logo">
-            <div className="knowledge-logo-icon">📚</div>
-          </div>
-          <h1 className="knowledge-title">知识库</h1>
-          <p className="knowledge-subtitle">文件管理 · 智能检索 · 语义搜索</p>
-        </div>
-
-        <div className="knowledge-content">
+    <AppLayout
+      title="知识库"
+      subtitle="文件管理 · 智能检索 · 语义搜索"
+      icon="📚"
+    >
+      <div className="knowledge-view">
+        <div className="knowledge-container">
+          <div className="knowledge-content">
           {/* 消息提示 */}
           {message && (
             <div className={`knowledge-message knowledge-message-${message.type}`}>
@@ -271,9 +269,10 @@ export const KnowledgeBase: React.FC = () => {
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

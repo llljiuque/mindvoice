@@ -1,5 +1,9 @@
 """
-消费计量服务模块
+消费计量服务模块 (v1.2.1 重构版)
+
+核心变化：
+- 消费记录同时记录 user_id 和 device_id
+- 月度汇总按 user_id + device_id 统计
 
 功能：
 - ASR消费记录
@@ -20,7 +24,7 @@ logger = get_logger("ConsumptionService")
 
 
 class ConsumptionService:
-    """消费计量服务"""
+    """消费计量服务（v1.2.1 重构：记录用户和设备）"""
     
     def __init__(self, config: Config):
         """初始化消费服务
@@ -35,18 +39,19 @@ class ConsumptionService:
         database_relative = Path(config.get('storage.database'))
         self.db_path = data_dir / database_relative
         
-        logger.info(f"[消费服务] 初始化，数据库: {self.db_path}")
+        logger.info(f"[消费服务] 初始化 (v1.2.1)，数据库: {self.db_path}")
     
     def _get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
-        # 启用WAL模式，支持并发读写
         conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA foreign_keys=ON')
         return conn
     
     def record_asr_consumption(
         self,
+        user_id: str,
         device_id: str,
         duration_ms: int,
         start_time: int,
@@ -58,6 +63,7 @@ class ConsumptionService:
         """记录ASR消费
         
         Args:
+            user_id: 用户ID
             device_id: 设备ID
             duration_ms: 时长（毫秒）
             start_time: 开始时间（毫秒时间戳）
@@ -95,16 +101,16 @@ class ConsumptionService:
             # 插入消费记录
             cursor.execute('''
                 INSERT INTO consumption_records 
-                (id, device_id, year, month, type, amount, unit, model_source, details, session_id, timestamp, created_at)
-                VALUES (?, ?, ?, ?, 'asr', ?, 'ms', 'vendor', ?, ?, ?, ?)
-            ''', (record_id, device_id, year, month, duration_ms, details_json, session_id, timestamp, created_at))
+                (id, user_id, device_id, year, month, type, amount, unit, model_source, details, session_id, timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, 'asr', ?, 'ms', 'vendor', ?, ?, ?, ?)
+            ''', (record_id, user_id, device_id, year, month, duration_ms, details_json, session_id, timestamp, created_at))
             
-            # 更新月度汇总（使用同一个连接和游标）
-            self._update_monthly_asr_with_cursor(cursor, device_id, year, month, duration_ms)
+            # 更新月度汇总
+            self._update_monthly_asr_with_cursor(cursor, user_id, device_id, year, month, duration_ms)
             
             conn.commit()
             
-            logger.info(f"[消费服务] ASR消费已记录: {device_id}, {duration_ms}ms")
+            logger.info(f"[消费服务] ASR消费已记录: user_id={user_id}, device_id={device_id}, {duration_ms}ms")
             
             return record_id
             
@@ -115,62 +121,22 @@ class ConsumptionService:
         finally:
             conn.close()
     
-    def check_asr_quota(self, device_id: str, required_ms: int) -> Dict[str, Any]:
-        """检查ASR额度是否充足
-        
-        Args:
-            device_id: 设备ID
-            required_ms: 所需时长（毫秒）
-        
-        Returns:
-            检查结果 {'has_quota': bool, 'used_ms': int, 'quota_ms': int, 'remaining_ms': int}
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            year = datetime.now().year
-            month = datetime.now().month
-            
-            # 获取月度汇总
-            cursor.execute('''
-                SELECT asr_duration_ms FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
-            
-            row = cursor.fetchone()
-            used_ms = row[0] if row else 0
-            
-            # 获取会员额度限制（需要从membership_service获取，这里先返回默认值）
-            # TODO: 与membership_service集成获取实际额度
-            quota_ms = 3_600_000  # 默认1小时（免费会员）
-            
-            remaining_ms = max(0, quota_ms - used_ms)
-            has_quota = remaining_ms >= required_ms
-            
-            return {
-                'has_quota': has_quota,
-                'used_ms': used_ms,
-                'quota_ms': quota_ms,
-                'remaining_ms': remaining_ms
-            }
-        finally:
-            conn.close()
-    
     def record_llm_consumption(
         self,
+        user_id: str,
         device_id: str,
         prompt_tokens: int,
         completion_tokens: int,
         total_tokens: int,
         model: str,
-        provider: str,
+        provider: str = 'openai',
         model_source: str = 'vendor',
         request_id: Optional[str] = None
     ) -> str:
         """记录LLM消费
         
         Args:
+            user_id: 用户ID
             device_id: 设备ID
             prompt_tokens: 输入tokens
             completion_tokens: 输出tokens
@@ -207,20 +173,20 @@ class ConsumptionService:
             import json
             details_json = json.dumps(details, ensure_ascii=False)
             
-            # 插入消费记录
+            # 插入消费记录（用户自备模型也记录，但不计入额度）
             cursor.execute('''
                 INSERT INTO consumption_records 
-                (id, device_id, year, month, type, amount, unit, model_source, details, session_id, timestamp, created_at)
-                VALUES (?, ?, ?, ?, 'llm', ?, 'tokens', ?, ?, ?, ?, ?)
-            ''', (record_id, device_id, year, month, total_tokens, model_source, details_json, request_id, timestamp, created_at))
+                (id, user_id, device_id, year, month, type, amount, unit, model_source, details, session_id, timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, 'llm', ?, 'tokens', ?, ?, ?, ?, ?)
+            ''', (record_id, user_id, device_id, year, month, total_tokens, model_source, details_json, request_id, timestamp, created_at))
             
-            # 仅厂商模型计入月度汇总
+            # 仅平台模型计入额度
             if model_source == 'vendor':
-                self._update_monthly_llm_with_cursor(cursor, device_id, year, month, prompt_tokens, completion_tokens, total_tokens)
+                self._update_monthly_llm_with_cursor(cursor, user_id, device_id, year, month, prompt_tokens, completion_tokens, total_tokens)
             
             conn.commit()
             
-            logger.info(f"[消费服务] LLM消费已记录: {device_id}, {total_tokens}tokens, source={model_source}")
+            logger.info(f"[消费服务] LLM消费已记录: user_id={user_id}, device_id={device_id}, {total_tokens} tokens, model_source={model_source}")
             
             return record_id
             
@@ -231,267 +197,172 @@ class ConsumptionService:
         finally:
             conn.close()
     
-    def check_llm_quota(self, device_id: str, required_tokens: int) -> Dict[str, Any]:
-        """检查LLM额度是否充足
-        
-        Args:
-            device_id: 设备ID
-            required_tokens: 所需tokens数
-        
-        Returns:
-            检查结果 {'has_quota': bool, 'used_tokens': int, 'quota_tokens': int, 'remaining_tokens': int}
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            year = datetime.now().year
-            month = datetime.now().month
-            
-            # 获取月度汇总
-            cursor.execute('''
-                SELECT llm_total_tokens FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
-            
-            row = cursor.fetchone()
-            used_tokens = row[0] if row else 0
-            
-            # 获取会员额度限制（需要从membership_service获取，这里先返回默认值）
-            # TODO: 与membership_service集成获取实际额度
-            quota_tokens = 100_000  # 默认10万tokens（免费会员）
-            
-            remaining_tokens = max(0, quota_tokens - used_tokens)
-            has_quota = remaining_tokens >= required_tokens
-            
-            return {
-                'has_quota': has_quota,
-                'used_tokens': used_tokens,
-                'quota_tokens': quota_tokens,
-                'remaining_tokens': remaining_tokens
-            }
-        finally:
-            conn.close()
-    
-    def get_monthly_consumption(self, device_id: str, year: int, month: int) -> Dict[str, Any]:
-        """获取指定月份的消费统计
-        
-        Args:
-            device_id: 设备ID
-            year: 年份
-            month: 月份
-        
-        Returns:
-            包含ASR和LLM消费统计的字典
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT asr_duration_ms, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens,
-                       record_count, created_at, updated_at
-                FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
-            
-            row = cursor.fetchone()
-            
-            # 计算下次重置时间（下个月1日）
-            from datetime import datetime
-            if month == 12:
-                next_year = year + 1
-                next_month = 1
-            else:
-                next_year = year
-                next_month = month + 1
-            reset_at = f"{next_year}-{next_month:02d}-01T00:00:00"
-            
-            if row:
-                return {
-                    'device_id': device_id,
-                    'year': year,
-                    'month': month,
-                    'asr_used_ms': row[0] or 0,  # 前端期望的字段名
-                    'asr_duration_minutes': round((row[0] or 0) / 60000, 2),  # 转换为分钟
-                    'llm_prompt_tokens': row[1] or 0,
-                    'llm_completion_tokens': row[2] or 0,
-                    'llm_used_tokens': row[3] or 0,  # 前端期望的字段名
-                    'record_count': row[4] or 0,
-                    'created_at': row[5],
-                    'updated_at': row[6],
-                    'reset_at': reset_at  # 额度重置时间
-                }
-            else:
-                # 没有记录，返回0值
-                return {
-                    'device_id': device_id,
-                    'year': year,
-                    'month': month,
-                    'asr_used_ms': 0,  # 前端期望的字段名
-                    'asr_duration_minutes': 0.0,
-                    'llm_prompt_tokens': 0,
-                    'llm_completion_tokens': 0,
-                    'llm_used_tokens': 0,  # 前端期望的字段名
-                    'record_count': 0,
-                    'created_at': None,
-                    'updated_at': None,
-                    'reset_at': reset_at  # 额度重置时间
-                }
-        finally:
-            conn.close()
-    
-    def _update_monthly_asr(self, device_id: str, year: int, month: int, duration_ms: int) -> None:
-        """更新月度ASR汇总"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # 检查是否已存在记录
-            cursor.execute('''
-                SELECT * FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
-            
-            row = cursor.fetchone()
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            if row:
-                # 更新现有记录
-                cursor.execute('''
-                    UPDATE monthly_consumption
-                    SET asr_duration_ms = asr_duration_ms + ?,
-                        record_count = record_count + 1,
-                        updated_at = ?
-                    WHERE device_id = ? AND year = ? AND month = ?
-                ''', (duration_ms, now, device_id, year, month))
-            else:
-                # 创建新记录
-                cursor.execute('''
-                    INSERT INTO monthly_consumption 
-                    (device_id, year, month, asr_duration_ms, llm_total_tokens, record_count, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, 0, 1, ?, ?)
-                ''', (device_id, year, month, duration_ms, now, now))
-            
-            conn.commit()
-        finally:
-            conn.close()
-    
-    def _update_monthly_asr_with_cursor(self, cursor, device_id: str, year: int, month: int, duration_ms: int) -> None:
-        """更新月度ASR汇总（使用传入的游标，避免创建新连接）"""
-        # 检查是否已存在记录
-        cursor.execute('''
-            SELECT * FROM monthly_consumption
-            WHERE device_id = ? AND year = ? AND month = ?
-        ''', (device_id, year, month))
-        
-        row = cursor.fetchone()
+    def _update_monthly_asr_with_cursor(
+        self, 
+        cursor: sqlite3.Cursor, 
+        user_id: str,
+        device_id: str, 
+        year: int, 
+        month: int, 
+        duration_ms: int
+    ) -> None:
+        """使用提供的游标更新月度ASR汇总（按user_id汇总，device_id仅用于记录）"""
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        if row:
-            # 更新现有记录
-            cursor.execute('''
-                UPDATE monthly_consumption
-                SET asr_duration_ms = asr_duration_ms + ?,
-                    record_count = record_count + 1,
-                    updated_at = ?
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (duration_ms, now, device_id, year, month))
-        else:
-            # 创建新记录
-            cursor.execute('''
-                INSERT INTO monthly_consumption 
-                (device_id, year, month, asr_duration_ms, llm_total_tokens, record_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 0, 1, ?, ?)
-            ''', (device_id, year, month, duration_ms, now, now))
-    
-    def _update_monthly_llm(self, device_id: str, year: int, month: int, 
-                           prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
-        """更新月度LLM汇总"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # 检查是否已存在记录
-            cursor.execute('''
-                SELECT * FROM monthly_consumption
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (device_id, year, month))
-            
-            row = cursor.fetchone()
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            if row:
-                # 更新现有记录
-                cursor.execute('''
-                    UPDATE monthly_consumption
-                    SET llm_prompt_tokens = llm_prompt_tokens + ?,
-                        llm_completion_tokens = llm_completion_tokens + ?,
-                        llm_total_tokens = llm_total_tokens + ?,
-                        record_count = record_count + 1,
-                        updated_at = ?
-                    WHERE device_id = ? AND year = ? AND month = ?
-                ''', (prompt_tokens, completion_tokens, total_tokens, now, device_id, year, month))
-            else:
-                # 创建新记录
-                cursor.execute('''
-                    INSERT INTO monthly_consumption 
-                    (device_id, year, month, asr_duration_ms, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, record_count, created_at, updated_at)
-                    VALUES (?, ?, ?, 0, ?, ?, ?, 1, ?, ?)
-                ''', (device_id, year, month, prompt_tokens, completion_tokens, total_tokens, now, now))
-            
-            conn.commit()
-        finally:
-            conn.close()
-    
-    def _update_monthly_llm_with_cursor(self, cursor, device_id: str, year: int, month: int, 
-                           prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
-        """更新月度LLM汇总（使用传入的游标，避免创建新连接）"""
-        # 检查是否已存在记录
+        # 尝试更新（按user_id汇总，不区分device_id）
         cursor.execute('''
-            SELECT * FROM monthly_consumption
-            WHERE device_id = ? AND year = ? AND month = ?
-        ''', (device_id, year, month))
+            UPDATE monthly_consumption
+            SET asr_duration_ms = asr_duration_ms + ?,
+                record_count = record_count + 1,
+                updated_at = ?
+            WHERE user_id = ? AND year = ? AND month = ?
+        ''', (duration_ms, now, user_id, year, month))
         
-        row = cursor.fetchone()
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        if row:
-            # 更新现有记录
-            cursor.execute('''
-                UPDATE monthly_consumption
-                SET llm_prompt_tokens = llm_prompt_tokens + ?,
-                    llm_completion_tokens = llm_completion_tokens + ?,
-                    llm_total_tokens = llm_total_tokens + ?,
-                    record_count = record_count + 1,
-                    updated_at = ?
-                WHERE device_id = ? AND year = ? AND month = ?
-            ''', (prompt_tokens, completion_tokens, total_tokens, now, device_id, year, month))
-        else:
-            # 创建新记录
+        # 如果没有更新任何行，说明记录不存在，需要插入
+        if cursor.rowcount == 0:
             cursor.execute('''
                 INSERT INTO monthly_consumption 
-                (device_id, year, month, asr_duration_ms, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, record_count, created_at, updated_at)
-                VALUES (?, ?, ?, 0, ?, ?, ?, 1, ?, ?)
-            ''', (device_id, year, month, prompt_tokens, completion_tokens, total_tokens, now, now))
+                (user_id, year, month, asr_duration_ms, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, record_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, 0, 0, 1, ?, ?)
+            ''', (user_id, year, month, duration_ms, now, now))
     
-    def get_consumption_history(
+    def _update_monthly_llm_with_cursor(
         self,
+        cursor: sqlite3.Cursor,
+        user_id: str,
         device_id: str,
         year: int,
-        month: Optional[int] = None,
+        month: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int
+    ) -> None:
+        """使用提供的游标更新月度LLM汇总（按user_id汇总，device_id仅用于记录）"""
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 尝试更新（按user_id汇总，不区分device_id）
+        cursor.execute('''
+            UPDATE monthly_consumption
+            SET llm_prompt_tokens = llm_prompt_tokens + ?,
+                llm_completion_tokens = llm_completion_tokens + ?,
+                llm_total_tokens = llm_total_tokens + ?,
+                record_count = record_count + 1,
+                updated_at = ?
+            WHERE user_id = ? AND year = ? AND month = ?
+        ''', (prompt_tokens, completion_tokens, total_tokens, now, user_id, year, month))
+        
+        # 如果没有更新任何行，说明记录不存在，需要插入
+        if cursor.rowcount == 0:
+            cursor.execute('''
+                INSERT INTO monthly_consumption 
+                (user_id, year, month, asr_duration_ms, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, record_count, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?, ?, 1, ?, ?)
+            ''', (user_id, year, month, prompt_tokens, completion_tokens, total_tokens, now, now))
+    
+    def get_monthly_consumption(
+        self, 
+        user_id: str, 
+        device_id: Optional[str] = None,
+        year: Optional[int] = None, 
+        month: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """获取月度消费汇总（以user_id为主，device_id仅用于查询明细）
+        
+        Args:
+            user_id: 用户ID
+            device_id: 设备ID（可选，用于查询该设备的消费明细，不影响汇总结果）
+            year: 年份（默认当前年）
+            month: 月份（默认当前月）
+        
+        Returns:
+            月度消费统计（按user_id汇总，包含所有设备的消费）
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            year = year or datetime.now().year
+            month = month or datetime.now().month
+            
+            # 计算下次重置时间（下月1号）
+            from calendar import monthrange
+            if month == 12:
+                next_year, next_month = year + 1, 1
+            else:
+                next_year, next_month = year, month + 1
+            reset_at = f"{next_year}-{next_month:02d}-01 00:00:00"
+            
+            # 查询用户月度汇总（按user_id汇总，不区分device_id）
+            cursor.execute('''
+                SELECT * FROM monthly_consumption
+                WHERE user_id = ? AND year = ? AND month = ?
+            ''', (user_id, year, month))
+            row = cursor.fetchone()
+            
+            if not row:
+                # 新用户没有消费记录，返回默认值
+                return {
+                    'user_id': user_id,
+                    'device_id': device_id,  # 保留device_id用于标识查询的设备
+                    'year': year,
+                    'month': month,
+                    'asr_used_ms': 0,
+                    'llm_used_tokens': 0,
+                    'reset_at': reset_at
+                }
+            
+            # 如果指定了device_id，查询该设备的消费明细（从consumption_records表）
+            device_detail = None
+            if device_id:
+                cursor.execute('''
+                    SELECT 
+                        SUM(CASE WHEN type = 'asr' THEN amount ELSE 0 END) as asr_ms,
+                        SUM(CASE WHEN type = 'llm' THEN amount ELSE 0 END) as llm_tokens
+                    FROM consumption_records
+                    WHERE user_id = ? AND device_id = ? AND year = ? AND month = ?
+                ''', (user_id, device_id, year, month))
+                detail_row = cursor.fetchone()
+                if detail_row:
+                    device_detail = {
+                        'device_id': device_id,
+                        'asr_used_ms': int(detail_row[0] or 0),
+                        'llm_used_tokens': int(detail_row[1] or 0)
+                    }
+            
+            # 返回数据，统一字段名
+            result = {
+                'user_id': row['user_id'],
+                'year': row['year'],
+                'month': row['month'],
+                'asr_used_ms': row['asr_duration_ms'] or 0,
+                'llm_used_tokens': row['llm_total_tokens'] or 0,
+                'reset_at': reset_at
+            }
+            
+            # 如果查询了设备明细，添加到结果中
+            if device_detail:
+                result['device_detail'] = device_detail
+            
+            return result
+            
+        finally:
+            conn.close()
+    
+    def get_consumption_records(
+        self,
+        user_id: str,
+        device_id: Optional[str] = None,
         consumption_type: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """获取消费历史
+        """获取消费记录列表
         
         Args:
-            device_id: 设备ID
-            year: 年份
-            month: 月份（可选）
-            consumption_type: 消费类型（可选，'asr'或'llm'）
-            limit: 限制条数
+            user_id: 用户ID
+            device_id: 设备ID（可选）
+            consumption_type: 消费类型（'asr'或'llm'，可选）
+            limit: 返回数量限制
             offset: 偏移量
         
         Returns:
@@ -501,44 +372,30 @@ class ConsumptionService:
         cursor = conn.cursor()
         
         try:
-            # 构建查询
-            query = '''
-                SELECT * FROM consumption_records
-                WHERE device_id = ? AND year = ?
-            '''
-            params = [device_id, year]
+            # 构建查询条件
+            where_clauses = ['user_id = ?']
+            params = [user_id]
             
-            if month is not None:
-                query += ' AND month = ?'
-                params.append(month)
+            if device_id:
+                where_clauses.append('device_id = ?')
+                params.append(device_id)
             
             if consumption_type:
-                query += ' AND type = ?'
+                where_clauses.append('type = ?')
                 params.append(consumption_type)
             
-            query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
-            params.extend([limit, offset])
+            where_sql = ' AND '.join(where_clauses)
             
-            cursor.execute(query, params)
+            # 执行查询
+            cursor.execute(f'''
+                SELECT * FROM consumption_records
+                WHERE {where_sql}
+                ORDER BY timestamp DESC
+                LIMIT ? OFFSET ?
+            ''', params + [limit, offset])
             
-            records = []
-            for row in cursor.fetchall():
-                import json
-                details = json.loads(row['details']) if row['details'] else {}
-                
-                records.append({
-                    'id': row['id'],
-                    'type': row['type'],
-                    'amount': row['amount'],
-                    'unit': row['unit'],
-                    'model_source': row['model_source'],
-                    'details': details,
-                    'timestamp': row['timestamp'],
-                    'created_at': row['created_at']
-                })
-            
-            return records
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
             
         finally:
             conn.close()
-

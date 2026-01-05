@@ -55,6 +55,8 @@
   line-height: 1.6;
   font-weight: 500;
   letter-spacing: 0.01em;
+  white-space: pre-wrap;  /* 支持换行符 */
+  word-break: break-word;
 }
 
 .toast-close {

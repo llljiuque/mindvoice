@@ -25,24 +25,40 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
   const [error, setError] = useState<string | null>(null);
   const [membershipInfo, setMembershipInfo] = useState<any>(null);
   const [consumption, setConsumption] = useState<ConsumptionData | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadMembershipInfo();
-    loadConsumption();
+    loadUserAndMembership();
+    // loadConsumption(); // 暂时注释，等会员信息加载完再加载
   }, [deviceId]);
 
-  const loadMembershipInfo = async () => {
+  const loadUserAndMembership = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/membership/${deviceId}`);
-      const data = await response.json();
+      // 1. 先通过 device_id 获取用户信息（包括 user_id）
+      const userResponse = await fetch(`${API_BASE_URL}/api/user/profile/${deviceId}`);
+      const userData = await userResponse.json();
 
-      if (data.success) {
-        setMembershipInfo(data.data);
+      if (!userData.success || !userData.data) {
+        setError('用户信息不存在，请先完成注册');
+        return;
+      }
+
+      const userIdValue = userData.data.user_id;
+      setUserId(userIdValue);
+
+      // 2. 使用 user_id 获取会员信息
+      const membershipResponse = await fetch(`${API_BASE_URL}/api/membership/${userIdValue}`);
+      const membershipData = await membershipResponse.json();
+
+      if (membershipData.success) {
+        setMembershipInfo(membershipData.data);
+        // 3. 加载消费信息
+        loadConsumption(userIdValue);
       } else {
-        setError(data.error || '加载会员信息失败');
+        setError(membershipData.error || '加载会员信息失败');
       }
     } catch (err) {
       console.error('[会员信息] 加载失败:', err);
@@ -52,13 +68,13 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
     }
   };
 
-  const loadConsumption = async () => {
+  const loadConsumption = async (userIdValue: string) => {
     try {
       const now = new Date();
       const year = now.getFullYear();
       const month = now.getMonth() + 1;
       
-      const response = await fetch(`${API_BASE_URL}/api/consumption/monthly/${deviceId}?year=${year}&month=${month}`);
+      const response = await fetch(`${API_BASE_URL}/api/consumption/${userIdValue}/monthly?year=${year}&month=${month}`);
       const data = await response.json();
 
       if (data.success) {
@@ -82,7 +98,7 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
       <div className="membership-view">
         <div className="error-message">
           <p>{error}</p>
-          <button onClick={loadMembershipInfo}>重试</button>
+          <button onClick={loadUserAndMembership}>重试</button>
         </div>
       </div>
     );
@@ -114,18 +130,35 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
             {membershipInfo.is_active ? '有效' : '已过期'}
           </span>
         </div>
-        {membershipInfo.expires_at && (
-          <div className="info-row">
-            <span className="label">到期时间:</span>
-            <span className="value">{new Date(membershipInfo.expires_at).toLocaleString()}</span>
-          </div>
-        )}
-        {membershipInfo.permanent && (
+        {membershipInfo.permanent ? (
           <div className="info-row">
             <span className="label">类型:</span>
             <span className="value permanent">永久会员</span>
           </div>
-        )}
+        ) : membershipInfo.expires_at ? (
+          <>
+            <div className="info-row">
+              <span className="label">有效期至:</span>
+              <span className="value">{new Date(membershipInfo.expires_at).toLocaleDateString('zh-CN', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+              })}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">剩余天数:</span>
+              <span className="value">
+                {(() => {
+                  const now = new Date();
+                  const expiresDate = new Date(membershipInfo.expires_at);
+                  const diffTime = expiresDate.getTime() - now.getTime();
+                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                  return diffDays > 0 ? `${diffDays} 天` : '已过期';
+                })()}
+              </span>
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="quota-section">
@@ -134,7 +167,7 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
         {/* ASR 额度 */}
         <div className="quota-item">
           <div className="quota-header">
-            <span className="quota-label">🎤 语音识别 (ASR)</span>
+            <span className="quota-label">语音识别</span>
             <span className="quota-value">
               {consumption ? (() => {
                 const usedMinutes = Math.floor(consumption.asr_used_ms / 60000);
@@ -148,7 +181,9 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
               className="quota-progress" 
               style={{ 
                 width: `${Math.min(100, ((consumption?.asr_used_ms || 0) / (membershipInfo?.quota?.asr_duration_ms_monthly || 1)) * 100)}%`,
-                backgroundColor: ((consumption?.asr_used_ms || 0) / (membershipInfo?.quota?.asr_duration_ms_monthly || 1)) > 0.9 ? '#f44336' : '#4a90e2'
+                background: ((consumption?.asr_used_ms || 0) / (membershipInfo?.quota?.asr_duration_ms_monthly || 1)) > 0.9 
+                  ? 'linear-gradient(90deg, #f44336 0%, #d32f2f 100%)' 
+                  : 'linear-gradient(90deg, #4a90e2 0%, #357abd 100%)'
               }}
             />
           </div>
@@ -157,7 +192,7 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
         {/* LLM 额度 */}
         <div className="quota-item">
           <div className="quota-header">
-            <span className="quota-label">🤖 AI对话 (LLM)</span>
+            <span className="quota-label">大语言模型</span>
             <span className="quota-value">
               {consumption ? (() => {
                 const usedKTokens = Math.floor(consumption.llm_used_tokens / 1000);
@@ -171,7 +206,9 @@ export const MembershipView: React.FC<MembershipViewProps> = ({ deviceId }) => {
               className="quota-progress" 
               style={{ 
                 width: `${Math.min(100, ((consumption?.llm_used_tokens || 0) / (membershipInfo?.quota?.llm_tokens_monthly || 1)) * 100)}%`,
-                backgroundColor: ((consumption?.llm_used_tokens || 0) / (membershipInfo?.quota?.llm_tokens_monthly || 1)) > 0.9 ? '#f44336' : '#4caf50'
+                background: ((consumption?.llm_used_tokens || 0) / (membershipInfo?.quota?.llm_tokens_monthly || 1)) > 0.9 
+                  ? 'linear-gradient(90deg, #f44336 0%, #d32f2f 100%)' 
+                  : 'linear-gradient(90deg, #66bb6a 0%, #43a047 100%)'
               }}
             />
           </div>
