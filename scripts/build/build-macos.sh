@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 # MindVoice macOS 构建脚本
-# 用途：构建 macOS 平台的完整安装包
+# 用途：构建 macOS 平台的完整安装包（arm64）
 # 作者：深圳王哥 & AI
-# 日期：2026-01-04
+# 日期：2026-01-05
 # 版本：1.0.0
 #
 
@@ -99,7 +99,16 @@ clean_build() {
     rm -rf "$PYTHON_BACKEND_DIR/build"
     rm -rf "$ELECTRON_DIR/dist"
     rm -rf "$ELECTRON_DIR/dist-electron"
-    rm -rf "$RELEASE_DIR/latest"
+    
+    # 只清理 macOS 相关的构建产物，保留其他平台的
+    log_info "清理 macOS 构建产物..."
+    rm -rf "$RELEASE_DIR/latest/mac" 2>/dev/null || true
+    rm -rf "$RELEASE_DIR/latest/mac-arm64" 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.dmg 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.dmg.sha256 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.zip 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.zip.sha256 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.blockmap 2>/dev/null || true
     
     log_success "清理完成"
 }
@@ -158,6 +167,11 @@ build_electron_frontend() {
         npm install
     fi
     
+    # 复制构建资源到 electron-app/build
+    log_info "准备构建资源..."
+    mkdir -p build
+    cp -r "$BUILD_DIR/resources/"* build/ 2>/dev/null || true
+    
     # 构建前端
     log_info "构建 Vite 前端..."
     npm run build:vite
@@ -193,21 +207,40 @@ package_application() {
 post_build() {
     log_info "后处理..."
     
-    # 显示输出文件
-    log_info "构建产物："
-    find "$RELEASE_DIR/latest" -type f \( -name "*.dmg" -o -name "*.zip" \) -exec ls -lh {} \; 2>/dev/null || log_warning "未找到安装包文件"
+    # 清理不需要的文件（只清理 macOS 相关的）
+    log_info "清理 macOS 中间文件和不需要的构建产物..."
+    rm -rf "$RELEASE_DIR/latest/mac" 2>/dev/null || true
+    rm -rf "$RELEASE_DIR/latest/mac-arm64" 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.blockmap 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-*.zip 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-x64.dmg 2>/dev/null || true
+    rm -f "$RELEASE_DIR/latest"/*-mac-x64.dmg.sha256 2>/dev/null || true
+    # 注意：builder-*.yml 和 builder-*.yaml 可能是多平台共享的，保留
     
-    # 计算 SHA256
-    log_info "计算 SHA256 校验和..."
+    # 显示最终输出文件
+    log_info "构建产物："
+    find "$RELEASE_DIR/latest" -type f -name "*.dmg" -exec ls -lh {} \; 2>/dev/null || log_warning "未找到安装包文件"
+    
+    # 只生成 arm64 dmg 的 SHA256 校验和
+    log_info "生成 SHA256 校验和..."
     cd "$RELEASE_DIR/latest"
-    for file in *.dmg *.zip; do
-        if [ -f "$file" ] 2>/dev/null; then
-            shasum -a 256 "$file" > "$file.sha256"
-            log_success "$file → $file.sha256"
+    for file in MindVoice-*-mac-arm64.dmg; do
+        if [ -f "$file" ]; then
+            if command -v shasum &> /dev/null; then
+                shasum -a 256 "$file" > "$file.sha256"
+                log_success "$file → $file.sha256"
+            elif command -v sha256sum &> /dev/null; then
+                sha256sum "$file" > "$file.sha256"
+                log_success "$file → $file.sha256"
+            else
+                log_warning "未找到 SHA256 工具，跳过校验和生成"
+            fi
         fi
     done
     
     cd "$PROJECT_ROOT"
+    
+    log_success "清理完成，只保留 macOS arm64 DMG 安装包"
 }
 
 # ============================================================================
@@ -238,6 +271,7 @@ main() {
     log_success "构建完成！"
     log_success "=========================================="
     log_info "安装包位置: $RELEASE_DIR/latest/"
+    log_info "macOS arm64 安装包: MindVoice-${version}-mac-arm64.dmg"
 }
 
 # 执行主流程

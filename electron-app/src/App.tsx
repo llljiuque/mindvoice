@@ -3,6 +3,7 @@ import { Sidebar, AppView } from './components/shared/Sidebar';
 import { VoiceNote } from './components/apps/VoiceNote/VoiceNote';
 import { SmartChat } from './components/apps/SmartChat/SmartChat';
 import VoiceZen from './components/apps/VoiceZen/VoiceZen';
+import { KnowledgeBase } from './components/apps/KnowledgeBase/KnowledgeBase';
 import { HistoryView } from './components/shared/HistoryView';
 import { SettingsView } from './components/shared/SettingsView';
 import { AboutView } from './components/shared/AboutView';
@@ -1199,6 +1200,10 @@ function App() {
             onEndWork={endWorkSession}
             onContentChange={setVoiceZenHasContent}
           />
+        )}
+
+        {activeView === 'knowledge-base' && (
+          <KnowledgeBase />
         )}
 
         {activeView === 'history' && (

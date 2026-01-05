@@ -3,7 +3,7 @@
   "productName": "MindVoice",
   "copyright": "Copyright © 2026 深圳王哥 & AI",
   "directories": {
-    "output": "../../release/latest",
+    "output": "../release/latest",
     "buildResources": "build"
   },
   "files": [
@@ -13,16 +13,16 @@
   ],
   "extraResources": [
     {
-      "from": "../../python-backend/dist/",
+      "from": "../python-backend/dist/",
       "to": "python-backend/",
       "filter": ["**/*"]
     },
     {
-      "from": "../../config.yml.example",
-      "to": "config/config.yml.example"
+      "from": "../config.yml.example",
+      "to": "config.yml.example"
     },
     {
-      "from": "../../README.md",
+      "from": "../README.md",
       "to": "docs/README.md"
     }
   ],
@@ -32,11 +32,7 @@
     "target": [
       {
         "target": "dmg",
-        "arch": ["x64", "arm64"]
-      },
-      {
-        "target": "zip",
-        "arch": ["x64", "arm64"]
+        "arch": ["arm64"]
       }
     ],
     "hardenedRuntime": true,
@@ -72,11 +68,13 @@
     "target": [
       {
         "target": "nsis",
-        "arch": ["x64", "ia32"]
+        "arch": ["x64"]
       }
     ],
     "icon": "../../build/resources/icons/icon.ico",
-    "artifactName": "${productName}-${version}-windows-${arch}.${ext}"
+    "artifactName": "${productName}-${version}-windows-${arch}.${ext}",
+    "signAndEditExecutable": false,
+    "signDlls": false
   },
   "nsis": {
     "oneClick": false,

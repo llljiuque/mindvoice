@@ -62,6 +62,7 @@ electron-app/node_modules/
 electron-app/dist/
 electron-app/dist-electron/
 electron-app/release/
+electron-app/build/  # 构建时复制的资源文件
 
 # 废弃文件
 .deprecated/

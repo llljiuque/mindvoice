@@ -23,6 +23,8 @@ NC='\033[0m' # No Color
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
 PYTHON_CMD="python3"
+API_PORT=8765
+API_HOST="127.0.0.1"
 
 # 打印带颜色的消息
 print_info() {
@@ -339,6 +341,191 @@ EOF
     return 1  # 端口未被占用
 }
 
+# 快速端口检查（优化版本）
+check_port_fast() {
+    local port=$1
+    local host=${2:-"127.0.0.1"}
+    
+    # 使用 Python 快速检查（最可靠）
+    python3 -c "
+import socket
+import sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(0.1)
+try:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('$host', $port))
+    s.close()
+    sys.exit(1)  # 端口未被占用
+except OSError:
+    s.close()
+    sys.exit(0)  # 端口被占用
+" 2>/dev/null
+    
+    return $?
+}
+
+# 检查程序是否正在运行（API 服务器响应正常）
+check_program_running() {
+    local port=${1:-$API_PORT}
+    local host=${2:-$API_HOST}
+    
+    # 检查 API 服务器是否响应
+    if command -v curl >/dev/null 2>&1; then
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 --connect-timeout 1 "http://$host:$port/api/status" 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ]; then
+            return 0  # 程序正在运行
+        fi
+    fi
+    
+    # 备用方案：检查根路径
+    if command -v curl >/dev/null 2>&1; then
+        local http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 1 --connect-timeout 1 "http://$host:$port/" 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ] || [ "$http_code" = "404" ] || [ "$http_code" = "307" ]; then
+            return 0  # 程序正在运行
+        fi
+    fi
+    
+    return 1  # 程序未运行
+}
+
+# 检查是否有残余进程（进程存在但 API 不响应）
+check_zombie_processes() {
+    local port=${1:-$API_PORT}
+    local found=false
+    
+    # 检查端口是否被占用
+    if check_port_fast $port $API_HOST; then
+        found=true
+    fi
+    
+    # 检查是否有相关进程
+    local api_pids=$(pgrep -f "api_server.py" 2>/dev/null || true)
+    if [ -n "$api_pids" ]; then
+        found=true
+    fi
+    
+    if [ "$found" = true ]; then
+        return 0  # 发现残余进程
+    fi
+    
+    return 1  # 没有残余进程
+}
+
+# 获取运行中的进程信息
+get_running_process_info() {
+    local port=${1:-$API_PORT}
+    local info=""
+    
+    # 获取占用端口的进程信息
+    if command -v lsof >/dev/null 2>&1; then
+        local port_info=$(lsof -i :$port 2>/dev/null | grep LISTEN | head -1)
+        if [ -n "$port_info" ]; then
+            info="$info\n端口 $port: $port_info"
+        fi
+    fi
+    
+    # 获取 API 服务器进程信息
+    local api_pids=$(pgrep -f "api_server.py" 2>/dev/null || true)
+    if [ -n "$api_pids" ]; then
+        for pid in $api_pids; do
+            local pid_info=$(ps -p $pid -o pid,etime,command 2>/dev/null | tail -1)
+            if [ -n "$pid_info" ]; then
+                info="$info\nAPI 服务器进程: $pid_info"
+            fi
+        done
+    fi
+    
+    # 获取 Electron 进程信息
+    local electron_pids=$(pgrep -f "electron" 2>/dev/null | grep -v "^$$$" || true)
+    if [ -n "$electron_pids" ]; then
+        for pid in $electron_pids; do
+            local pid_info=$(ps -p $pid -o pid,etime,command 2>/dev/null | tail -1)
+            if [ -n "$pid_info" ]; then
+                info="$info\nElectron 进程: $pid_info"
+            fi
+        done
+    fi
+    
+    echo -e "$info"
+}
+
+# 检查单实例运行（在启动前检查）
+check_single_instance() {
+    local force_clean=${1:-false}  # 是否强制清理
+    
+    # 1. 检查程序是否正在正常运行
+    if check_program_running $API_PORT $API_HOST; then
+        print_warning "程序已经在运行中！"
+        echo ""
+        print_info "运行中的进程信息："
+        get_running_process_info $API_PORT | sed 's/^/  /'
+        echo ""
+        
+        if [ "$force_clean" = true ]; then
+            print_info "强制清理模式：停止旧实例并启动新实例..."
+            cleanup_processes $API_PORT
+            sleep 1
+            return 0
+        fi
+        
+        print_info "选项："
+        print_info "  1. 退出（保持当前运行的程序）"
+        print_info "  2. 停止旧实例并启动新实例"
+        echo ""
+        
+        # 非交互模式（CI/CD 或脚本调用）时，默认退出
+        if [ ! -t 0 ] || [ -n "$CI" ]; then
+            print_info "非交互模式，退出..."
+            exit 0
+        fi
+        
+        # 交互模式，询问用户
+        while true; do
+            read -p "请选择 [1/2] (默认: 1): " choice
+            choice=${choice:-1}
+            
+            case $choice in
+                1)
+                    print_info "退出，保持当前程序运行"
+                    exit 0
+                    ;;
+                2)
+                    print_info "停止旧实例并启动新实例..."
+                    cleanup_processes $API_PORT
+                    sleep 1
+                    return 0
+                    ;;
+                *)
+                    print_warning "无效选择，请输入 1 或 2"
+                    ;;
+            esac
+        done
+    fi
+    
+    # 2. 检查是否有残余进程（进程存在但 API 不响应）
+    if check_zombie_processes $API_PORT; then
+        print_warning "检测到残余进程（可能是上次异常关闭导致的）"
+        echo ""
+        print_info "发现的进程："
+        get_running_process_info $API_PORT | sed 's/^/  /'
+        echo ""
+        
+        if [ "$force_clean" = true ]; then
+            print_info "强制清理模式：自动清理残余进程..."
+            cleanup_processes $API_PORT
+            sleep 1
+            return 0
+        fi
+        
+        print_info "正在自动清理残余进程..."
+        cleanup_processes $API_PORT
+        sleep 1
+    fi
+    
+    return 0
+}
+
 # 清理函数（优化版本：更快、更可靠）
 cleanup_processes() {
     local port=${1:-8765}
@@ -402,18 +589,24 @@ cleanup_processes() {
 
 # 运行应用
 run_app() {
+    local force_clean=${1:-false}  # 是否强制清理
+    local api_only=${2:-false}      # 是否仅启动 API 服务器
+    
     print_info "启动应用..."
     print_info "=========================================="
     print_success "语音桌面助手"
     print_info "=========================================="
     echo ""
     
+    # 检查单实例运行（在启动前检查）
+    check_single_instance $force_clean
+    
     # 设置退出时的清理
     trap cleanup_processes EXIT INT TERM
     
     # 默认端口
-    local api_port=8765
-    local api_host="127.0.0.1"
+    local api_port=$API_PORT
+    local api_host=$API_HOST
     
     # 检查端口是否被占用
     if check_port $api_port $api_host; then
@@ -440,6 +633,24 @@ run_app() {
         else
             print_success "端口清理完成，继续启动..."
         fi
+    fi
+    
+    # 如果指定了 --api-only，仅启动 API 服务器
+    if [ "$api_only" = true ]; then
+        print_info "仅启动 API 服务器（不启动 Electron）..."
+        print_info "提示：按 Ctrl+C 停止服务器"
+        echo ""
+        
+        # 设置退出时的清理
+        trap cleanup_processes EXIT INT TERM
+        
+        # 确保虚拟环境已激活
+        if [ -f "$VENV_DIR/bin/activate" ]; then
+            source "$VENV_DIR/bin/activate"
+        fi
+        
+        python "$PROJECT_DIR/api_server.py" --port $api_port --host $api_host
+        return 0
     fi
     
     # 检查是否可以启动 Electron
@@ -630,6 +841,9 @@ cleanup() {
 
 # 主函数
 main() {
+    local force_clean=${1:-false}  # 是否强制清理
+    local api_only=${2:-false}      # 是否仅启动 API 服务器
+    
     print_info "=========================================="
     print_info "语音桌面助手 - 快速启动"
     print_info "=========================================="
@@ -656,7 +870,7 @@ main() {
     trap cleanup EXIT
     
     # 运行应用
-    run_app
+    run_app $force_clean $api_only
 }
 
 # 处理命令行参数
@@ -669,6 +883,13 @@ case "${1:-}" in
         echo "  --clean         清理虚拟环境和缓存"
         echo "  --reinstall     重新安装依赖"
         echo "  --check-only    仅检查环境，不运行应用"
+        echo "  --api-only      仅启动 API 服务器（不启动 Electron）"
+        echo "  --force         强制清理旧实例并启动（不询问）"
+        echo ""
+        echo "单实例运行："
+        echo "  程序默认只允许运行一个实例。如果检测到已有实例："
+        echo "  - 正常运行：提示并询问是否停止旧实例"
+        echo "  - 残余进程：自动清理并启动新实例"
         echo ""
         exit 0
         ;;
@@ -698,9 +919,44 @@ case "${1:-}" in
         fi
         exit 0
         ;;
+    --api-only)
+        # 仅启动 API 服务器
+        cd "$PROJECT_DIR"
+        check_python
+        check_system_deps
+        setup_venv
+        install_dependencies
+        check_config
+        verify_installation
+        check_single_instance false
+        trap cleanup_processes EXIT INT TERM
+        
+        # 确保虚拟环境已激活
+        if [ -f "$VENV_DIR/bin/activate" ]; then
+            source "$VENV_DIR/bin/activate"
+        fi
+        
+        # 创建日志目录
+        LOG_DIR="$PROJECT_DIR/logs"
+        mkdir -p "$LOG_DIR"
+        API_LOG_FILE="$LOG_DIR/api_server_$(date +%Y%m%d_%H%M%S).log"
+        
+        print_info "启动 API 服务器..."
+        python "$PROJECT_DIR/api_server.py" --port $API_PORT --host $API_HOST > "$API_LOG_FILE" 2>&1 &
+        API_PID=$!
+        
+        print_info "API 服务器 PID: $API_PID"
+        print_info "日志文件: $API_LOG_FILE"
+        print_info "API 服务器运行中，按 Ctrl+C 停止"
+        wait
+        ;;
+    --force)
+        # 强制清理并启动
+        main true false
+        ;;
     "")
         # 无参数，执行主流程
-        main
+        main false false
         ;;
     *)
         print_error "未知参数: $1"

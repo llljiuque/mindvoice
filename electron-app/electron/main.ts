@@ -16,6 +16,7 @@ const API_HOST = '127.0.0.1';
 const API_URL = `http://${API_HOST}:${API_PORT}`;
 
 let mainWindow: BrowserWindow | null = null;
+let splashWindow: BrowserWindow | null = null; // 启动窗口
 let tray: Tray | null = null;
 let pythonProcess: ChildProcess | null = null;
 let isQuitting = false;
@@ -127,82 +128,189 @@ function startPythonServer(): Promise<void> {
   return new Promise(async (resolve, reject) => {
     const isDev = !app.isPackaged;
     
+    // 更新启动状态
+    updateSplashStatus('检查 API 服务器状态...', 10);
+    
     // 在开发模式下，先检查API服务器是否已经运行
     if (isDev) {
       console.log('[主进程] 开发模式：检查API服务器是否已运行...');
       const isRunning = await checkApiServerRunning();
       if (isRunning) {
         console.log('[主进程] API服务器已在运行，跳过启动');
+        updateSplashStatus('API 服务器已运行', 100);
         resolve();
         return;
       }
       console.log('[主进程] API服务器未运行，将启动新的服务器进程');
     }
     
-    // 获取Python可执行文件路径
-    const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+    updateSplashStatus('准备启动 Python 后端...', 20);
     
-    // 获取API服务器脚本路径
-    // 在开发环境中，从项目根目录查找
-    // 在打包后，从resources目录查找
-    let apiScriptPath: string;
+    // 获取API服务器路径
+    // 在开发环境中，使用 python3 运行 api_server.py
+    // 在打包后，直接运行打包好的可执行文件
+    let apiExecutable: string;
+    let apiArgs: string[] = [];
     
     if (isDev) {
-      // 开发环境：从项目根目录查找
-      apiScriptPath = path.join(__dirname, '../../api_server.py');
+      // 开发环境：使用 python3 运行 api_server.py
+      apiExecutable = process.platform === 'win32' ? 'python' : 'python3';
+      apiArgs = [path.join(__dirname, '../../api_server.py'), '--host', API_HOST, '--port', String(API_PORT)];
     } else {
-      // 生产环境：从resources目录查找
-      apiScriptPath = path.join(process.resourcesPath, 'api_server.py');
+      // 生产环境：直接运行打包好的可执行文件
+      const apiPath = path.join(process.resourcesPath, 'python-backend', 'mindvoice-api');
+      
+      // macOS/Linux: 确保可执行文件有执行权限
+      if (process.platform !== 'win32') {
+        try {
+          fs.chmodSync(apiPath, 0o755);
+        } catch (error) {
+          console.warn(`[主进程] 无法设置执行权限: ${error}`);
+        }
+      }
+      
+      apiExecutable = apiPath;
+      apiArgs = ['--host', API_HOST, '--port', String(API_PORT)];
+      
+      // 设置工作目录为 resourcesPath，这样 Python 后端可以找到 config.yml.example
+      // 注意：用户需要将 config.yml.example 复制为 config.yml 并配置
+      console.log(`[主进程] 生产环境工作目录: ${process.resourcesPath}`);
     }
     
-    console.log(`[主进程] 启动Python服务器: ${apiScriptPath}`);
+    console.log(`[主进程] 启动API服务器: ${apiExecutable} ${apiArgs.join(' ')}`);
     
     // 检查文件是否存在
-    if (!fs.existsSync(apiScriptPath)) {
-      reject(new Error(`API服务器脚本不存在: ${apiScriptPath}`));
+    if (!fs.existsSync(apiExecutable)) {
+      const errorMsg = `API服务器可执行文件不存在: ${apiExecutable}`;
+      updateSplashStatus('启动失败', 0, errorMsg);
+      reject(new Error(errorMsg));
       return;
     }
     
-    // 启动Python进程
-    pythonProcess = spawn(pythonPath, [apiScriptPath, '--host', API_HOST, '--port', String(API_PORT)], {
-      cwd: isDev ? path.join(__dirname, '../..') : process.resourcesPath,
+    updateSplashStatus('正在启动 Python 后端...', 30);
+    
+    // 启动API服务器进程
+    const workDir = isDev ? path.join(__dirname, '../..') : process.resourcesPath;
+    console.log(`[主进程] 工作目录: ${workDir}`);
+    
+    // 生产环境：检查配置文件并设置环境变量
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+    };
+    
+    if (!isDev) {
+      const configPath = path.join(process.resourcesPath, 'config.yml');
+      const configExamplePath = path.join(process.resourcesPath, 'config.yml.example');
+      
+      // 设置配置文件路径环境变量（Python 后端会优先使用）
+      if (fs.existsSync(configPath)) {
+        env.MINDVOICE_CONFIG_PATH = configPath;
+        console.log(`[主进程] 设置环境变量 MINDVOICE_CONFIG_PATH: ${configPath}`);
+      } else if (fs.existsSync(configExamplePath)) {
+        // 如果 config.yml 不存在，尝试使用 config.yml.example（但用户需要复制并配置）
+        console.warn(`[主进程] 配置文件不存在: ${configPath}`);
+        console.warn(`[主进程] 请从 ${configExamplePath} 复制为 ${configPath} 并配置`);
+        console.warn(`[主进程] Python 后端将使用默认配置（功能受限）`);
+      } else {
+        console.warn(`[主进程] 配置文件模板不存在: ${configExamplePath}`);
+        console.warn(`[主进程] Python 后端将使用默认配置（功能受限）`);
+      }
+    }
+    
+    pythonProcess = spawn(apiExecutable, apiArgs, {
+      cwd: workDir,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env,
     });
     
+    // 收集所有输出用于调试
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    
     pythonProcess.stdout?.on('data', (data) => {
-      console.log(`[Python] ${data.toString()}`);
+      const output = data.toString();
+      stdoutBuffer += output;
+      console.log(`[Python stdout] ${output}`);
     });
     
     pythonProcess.stderr?.on('data', (data) => {
-      console.error(`[Python Error] ${data.toString()}`);
+      const output = data.toString();
+      stderrBuffer += output;
+      console.error(`[Python stderr] ${output}`);
     });
     
     pythonProcess.on('error', (error) => {
       console.error(`[主进程] Python进程启动失败: ${error}`);
+      console.error(`[主进程] 可执行文件路径: ${apiExecutable}`);
+      console.error(`[主进程] 文件是否存在: ${fs.existsSync(apiExecutable)}`);
+      const errorMsg = `Python 进程启动失败: ${error.message}\n文件路径: ${apiExecutable}`;
+      updateSplashStatus('启动失败', 0, errorMsg);
       reject(error);
     });
     
-    pythonProcess.on('exit', (code) => {
+    pythonProcess.on('exit', (code, signal) => {
       if (code !== null && code !== 0 && !isQuitting) {
-        console.error(`[主进程] Python进程异常退出，代码: ${code}`);
+        console.error(`[主进程] Python进程异常退出，代码: ${code}, 信号: ${signal}`);
+        console.error(`[主进程] stdout: ${stdoutBuffer}`);
+        console.error(`[主进程] stderr: ${stderrBuffer}`);
         // 可以在这里实现自动重启逻辑
+      } else if (code === 0) {
+        console.log(`[主进程] Python进程正常退出`);
       }
     });
     
     // 等待服务器启动（检查端口是否可用）
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 30; // 增加到 30 次（15秒），给 Python 后端更多启动时间
     const checkInterval = setInterval(async () => {
       attempts++;
+      
+      // 更新进度（30% - 90%）
+      const progress = 30 + Math.min(60, (attempts / maxAttempts) * 60);
+      updateSplashStatus(`等待 API 服务器启动... (${attempts}/${maxAttempts})`, progress);
+      
+      // 检查 Python 进程是否还在运行
+      if (pythonProcess && pythonProcess.killed) {
+        clearInterval(checkInterval);
+        const errorMsg = 'Python 进程已退出，无法启动 API 服务器';
+        updateSplashStatus('启动失败', 0, errorMsg);
+        reject(new Error(errorMsg));
+        return;
+      }
+      
+      // 检查进程退出状态
+      if (pythonProcess && pythonProcess.exitCode !== null && pythonProcess.exitCode !== 0) {
+        clearInterval(checkInterval);
+        const errorMsg = `Python 进程异常退出，退出码: ${pythonProcess.exitCode}\n\n错误输出:\n${stderrBuffer.substring(0, 500)}`;
+        updateSplashStatus('启动失败', 0, errorMsg);
+        reject(new Error(`Python 进程异常退出，退出码: ${pythonProcess.exitCode}\nstdout: ${stdoutBuffer}\nstderr: ${stderrBuffer}`));
+        return;
+      }
+      
       const isRunning = await checkApiServerRunning();
       if (isRunning) {
         clearInterval(checkInterval);
+        console.log(`[主进程] API服务器启动成功（检查了 ${attempts} 次）`);
+        updateSplashStatus('启动成功！', 100);
         resolve();
       } else if (attempts >= maxAttempts) {
         clearInterval(checkInterval);
-        // 即使检查失败也resolve，因为服务器可能正在启动中
-        console.log('[主进程] API服务器启动检查超时，但继续运行');
-        resolve();
+        // 检查进程是否还在运行
+        if (pythonProcess && pythonProcess.exitCode === null) {
+          // 进程还在运行，但 API 还没响应，可能是启动较慢
+          console.warn(`[主进程] API服务器启动检查超时（${attempts} 次），但进程仍在运行`);
+          console.warn(`[主进程] stdout: ${stdoutBuffer.substring(0, 500)}`);
+          console.warn(`[主进程] stderr: ${stderrBuffer.substring(0, 500)}`);
+          updateSplashStatus('API 服务器启动较慢，继续运行...', 90);
+          // 仍然 resolve，让前端尝试连接（前端有重试机制）
+          resolve();
+        } else {
+          // 进程已退出，拒绝启动
+          const errorMsg = `Python 进程已退出，无法启动 API 服务器\n\n错误输出:\n${stderrBuffer.substring(0, 500)}`;
+          updateSplashStatus('启动失败', 0, errorMsg);
+          reject(new Error(`Python 进程已退出，无法启动 API 服务器\nstdout: ${stdoutBuffer}\nstderr: ${stderrBuffer}`));
+        }
       }
     }, 500);
   });
@@ -373,6 +481,154 @@ function getIconPath(): string | undefined {
     return iconSvgPath;
   }
   return undefined;
+}
+
+/**
+ * 创建启动窗口（显示启动进度）
+ */
+function createSplashWindow(): void {
+  const iconPath = getIconPath();
+  
+  splashWindow = new BrowserWindow({
+    width: 400,
+    height: 300,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    icon: iconPath,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  
+  // 创建启动页面的 HTML 内容
+  const splashHTML = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 20px;
+      text-align: center;
+    }
+    .logo {
+      font-size: 48px;
+      font-weight: bold;
+      margin-bottom: 20px;
+      opacity: 0.9;
+    }
+    .status {
+      font-size: 16px;
+      margin: 10px 0;
+      min-height: 24px;
+    }
+    .progress {
+      width: 200px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 2px;
+      margin: 20px 0;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: white;
+      width: 0%;
+      transition: width 0.3s ease;
+      border-radius: 2px;
+    }
+    .error {
+      color: #ff6b6b;
+      font-size: 14px;
+      margin-top: 10px;
+      max-width: 350px;
+      word-wrap: break-word;
+    }
+    .spinner {
+      border: 3px solid rgba(255, 255, 255, 0.3);
+      border-top: 3px solid white;
+      border-radius: 50%;
+      width: 30px;
+      height: 30px;
+      animation: spin 1s linear infinite;
+      margin: 10px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">MindVoice</div>
+  <div class="status" id="status">正在启动...</div>
+  <div class="progress">
+    <div class="progress-bar" id="progress"></div>
+  </div>
+  <div class="spinner" id="spinner"></div>
+  <div class="error" id="error" style="display: none;"></div>
+</body>
+</html>
+  `;
+  
+  splashWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(splashHTML)}`);
+  splashWindow.show();
+}
+
+/**
+ * 更新启动窗口状态
+ */
+function updateSplashStatus(message: string, progress: number = 0, error?: string): void {
+  if (!splashWindow) return;
+  
+  splashWindow.webContents.executeJavaScript(`
+    (function() {
+      const statusEl = document.getElementById('status');
+      const progressEl = document.getElementById('progress');
+      const errorEl = document.getElementById('error');
+      const spinnerEl = document.getElementById('spinner');
+      
+      if (statusEl) statusEl.textContent = ${JSON.stringify(message)};
+      if (progressEl) progressEl.style.width = ${progress} + '%';
+      
+      if (${JSON.stringify(error)}) {
+        if (errorEl) {
+          errorEl.textContent = ${JSON.stringify(error)};
+          errorEl.style.display = 'block';
+        }
+        if (spinnerEl) spinnerEl.style.display = 'none';
+      } else {
+        if (errorEl) errorEl.style.display = 'none';
+        if (spinnerEl) spinnerEl.style.display = 'block';
+      }
+    })();
+  `).catch(err => console.error('[主进程] 更新启动窗口状态失败:', err));
+}
+
+/**
+ * 关闭启动窗口
+ */
+function closeSplashWindow(): void {
+  if (splashWindow) {
+    splashWindow.close();
+    splashWindow = null;
+  }
 }
 
 /**
@@ -660,6 +916,10 @@ console.log(`[主进程] Electron 用户数据目录: ${electronUserDataPath}`);
 app.whenReady().then(async () => {
   console.log('[主进程] 应用启动...');
   
+  // 创建启动窗口
+  createSplashWindow();
+  updateSplashStatus('正在初始化...', 5);
+  
   // 设置CSP
   setupCSP();
   
@@ -667,6 +927,9 @@ app.whenReady().then(async () => {
     // 启动Python API服务器
     await startPythonServer();
     console.log('[主进程] Python API服务器已启动');
+    
+    // 更新启动状态
+    updateSplashStatus('正在加载应用界面...', 95);
     
     // 创建窗口和托盘
     createWindow();
@@ -676,9 +939,28 @@ app.whenReady().then(async () => {
     startPolling();
     
     console.log('[主进程] 应用初始化完成');
+    
+    // 等待主窗口加载完成后关闭启动窗口
+    if (mainWindow) {
+      mainWindow.once('ready-to-show', () => {
+        // 延迟关闭启动窗口，让用户看到完成状态
+        setTimeout(() => {
+          closeSplashWindow();
+          mainWindow?.show();
+        }, 500);
+      });
+    } else {
+      closeSplashWindow();
+    }
   } catch (error) {
     console.error('[主进程] 初始化失败:', error);
-    app.quit();
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    updateSplashStatus('启动失败', 0, errorMsg);
+    
+    // 显示错误后等待 5 秒再退出，让用户看到错误信息
+    setTimeout(() => {
+      app.quit();
+    }, 5000);
   }
 });
 

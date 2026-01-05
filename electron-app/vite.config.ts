@@ -4,6 +4,7 @@ import path from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: './', // 使用相对路径，适配 Electron 的 file:// 协议
   plugins: [react()],
   resolve: {
     alias: {

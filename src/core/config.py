@@ -27,8 +27,21 @@ class Config:
         Args:
             config_dir: 配置目录路径（仅用于用户ASR配置），默认使用 storage.data_dir
         """
-        # 项目根目录（假设 config.py 在 src/core/ 下）
-        project_root = Path(__file__).parent.parent.parent
+        # 项目根目录查找优先级：
+        # 1. 环境变量 MINDVOICE_CONFIG_DIR
+        # 2. 当前工作目录（打包后通常是 resourcesPath）
+        # 3. __file__ 相对路径（开发环境）
+        if os.getenv('MINDVOICE_CONFIG_DIR'):
+            project_root = Path(os.getenv('MINDVOICE_CONFIG_DIR'))
+        else:
+            # 尝试从当前工作目录查找（打包后的应用）
+            cwd = Path(os.getcwd())
+            if (cwd / 'config.yml').exists() or (cwd / 'config.yml.example').exists():
+                project_root = cwd
+            else:
+                # 降级：使用 __file__ 相对路径（开发环境）
+                project_root = Path(__file__).parent.parent.parent
+        
         self.project_config_file = project_root / 'config.yml'
         
         # 加载配置文件
