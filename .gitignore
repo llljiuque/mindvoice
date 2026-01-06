@@ -66,3 +66,8 @@ electron-app/build/  # 构建时复制的资源文件
 
 # 废弃文件
 .deprecated/
+
+# 临时文档目录（不上传，但保留说明文档）
+temp_docs/*
+!temp_docs/README.md
+.temp/

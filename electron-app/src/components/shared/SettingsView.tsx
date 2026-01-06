@@ -25,6 +25,20 @@ interface SettingsViewProps {
   apiConnected: boolean;
 }
 
+interface GitHubContributor {
+  login: string;
+  avatar_url: string;
+  html_url: string;
+  contributions: number;
+}
+
+interface GitHubOwner {
+  login: string;
+  avatar_url: string;
+  html_url: string;
+  type: string;
+}
+
 export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [currentDevice, setCurrentDevice] = useState<number | null>(null);
@@ -45,6 +59,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
   });
   const [asrLoading, setAsrLoading] = useState(false);
   const [asrSaving, setAsrSaving] = useState(false);
+
+  // GitHub 相关信息状态
+  const [githubOwner, setGithubOwner] = useState<GitHubOwner | null>(null);
+  const [githubContributors, setGithubContributors] = useState<GitHubContributor[]>([]);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
 
   // 加载音频设备列表
   const loadDevices = async (forceRefresh: boolean = false) => {
@@ -191,11 +211,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
     }
   };
 
+  // 从 GitHub API 获取仓库信息
+  const loadGitHubInfo = async () => {
+    const repository = APP_VERSION.github.repository;
+    if (!repository) {
+      setGithubError('未配置 GitHub 仓库地址');
+      return;
+    }
+
+    setGithubLoading(true);
+    setGithubError(null);
+
+    try {
+      // 获取仓库信息（包含 owner）
+      const repoResponse = await fetch(`https://api.github.com/repos/${repository}`);
+      if (!repoResponse.ok) {
+        throw new Error(`获取仓库信息失败: ${repoResponse.statusText}`);
+      }
+      const repoData = await repoResponse.json();
+      
+      setGithubOwner({
+        login: repoData.owner.login,
+        avatar_url: repoData.owner.avatar_url,
+        html_url: repoData.owner.html_url,
+        type: repoData.owner.type
+      });
+
+      // 获取贡献者列表
+      const contributorsResponse = await fetch(`https://api.github.com/repos/${repository}/contributors?per_page=100`);
+      if (!contributorsResponse.ok) {
+        throw new Error(`获取贡献者列表失败: ${contributorsResponse.statusText}`);
+      }
+      const contributorsData = await contributorsResponse.json();
+      
+      // 过滤掉机器人贡献者，并按贡献数排序
+      const contributors = contributorsData
+        .filter((c: any) => c.type === 'User') // 只显示用户，不显示机器人
+        .map((c: any) => ({
+          login: c.login,
+          avatar_url: c.avatar_url,
+          html_url: c.html_url,
+          contributions: c.contributions
+        }))
+        .sort((a: GitHubContributor, b: GitHubContributor) => b.contributions - a.contributions);
+      
+      setGithubContributors(contributors);
+    } catch (error) {
+      console.error('[SettingsView] 获取 GitHub 信息失败:', error);
+      setGithubError(error instanceof Error ? error.message : '获取 GitHub 信息失败');
+    } finally {
+      setGithubLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (apiConnected) {
       loadDevices();
       loadASRConfig();
     }
+    // 加载 GitHub 信息（不依赖 apiConnected）
+    loadGitHubInfo();
   }, [apiConnected]);
 
   return (
@@ -495,19 +570,98 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
                 </div>
               </div>
 
-              <div className="settings-about-developer">
-                <div className="settings-about-developer-name">开发者：深圳王哥 & AI</div>
-                <div className="settings-about-contact">
-                  <div className="settings-about-contact-item">
-                    <span className="settings-about-contact-label">邮箱：</span>
-                    <a href="mailto:manwjh@126.com" className="settings-about-contact-link">
-                      manwjh@126.com
-                    </a>
-                  </div>
-                  <div className="settings-about-contact-item">
-                    <span className="settings-about-contact-label">电话：</span>
-                    <span className="settings-about-contact-value">13510090675（微信同号）</span>
-                  </div>
+              {/* GitHub 仓库地址 */}
+              {APP_VERSION.github.repository && (
+                <div className="settings-about-github">
+                  <div className="settings-about-github-label">GitHub 仓库：</div>
+                  <a 
+                    href={APP_VERSION.github.url || `https://github.com/${APP_VERSION.github.repository}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="settings-about-github-link"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ marginRight: '0.5rem' }}>
+                      <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                    </svg>
+                    {APP_VERSION.github.repository}
+                  </a>
+                </div>
+              )}
+
+              {/* GitHub Owner 和贡献者 */}
+              {githubLoading ? (
+                <div className="settings-about-github-loading">
+                  <div className="loading-spinner" style={{ width: '16px', height: '16px', marginRight: '0.5rem' }}></div>
+                  <span>加载 GitHub 信息中...</span>
+                </div>
+              ) : githubError ? (
+                <div className="settings-about-github-error">
+                  <span style={{ color: '#e53e3e' }}>⚠️ {githubError}</span>
+                </div>
+              ) : (
+                <>
+                  {/* 项目 Owner */}
+                  {githubOwner && (
+                    <div className="settings-about-developer">
+                      <div className="settings-about-developer-header">
+                        <span className="settings-about-developer-label">项目所有者：</span>
+                        <a 
+                          href={githubOwner.html_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="settings-about-developer-link"
+                        >
+                          <img 
+                            src={githubOwner.avatar_url} 
+                            alt={githubOwner.login}
+                            className="settings-about-avatar"
+                          />
+                          <span>{githubOwner.login}</span>
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 贡献者列表 */}
+                  {githubContributors.length > 0 && (
+                    <div className="settings-about-contributors">
+                      <div className="settings-about-contributors-label">贡献者：</div>
+                      <div className="settings-about-contributors-list">
+                        {githubContributors.map((contributor) => (
+                          <a
+                            key={contributor.login}
+                            href={contributor.html_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="settings-about-contributor-item"
+                            title={`${contributor.login} (${contributor.contributions} 次提交)`}
+                          >
+                            <img 
+                              src={contributor.avatar_url} 
+                              alt={contributor.login}
+                              className="settings-about-contributor-avatar"
+                            />
+                            <span className="settings-about-contributor-name">{contributor.login}</span>
+                            <span className="settings-about-contributor-badge">{contributor.contributions}</span>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* 保留原有的联系信息 */}
+              <div className="settings-about-contact-info">
+                <div className="settings-about-contact-item">
+                  <span className="settings-about-contact-label">邮箱：</span>
+                  <a href="mailto:manwjh@126.com" className="settings-about-contact-link">
+                    manwjh@126.com
+                  </a>
+                </div>
+                <div className="settings-about-contact-item">
+                  <span className="settings-about-contact-label">电话：</span>
+                  <span className="settings-about-contact-value">13510090675（微信同号）</span>
                 </div>
               </div>
 

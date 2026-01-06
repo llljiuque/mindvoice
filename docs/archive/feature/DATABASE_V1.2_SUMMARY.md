@@ -72,18 +72,32 @@ archived_records = storage.get_archived_records(user_id)
 
 **数据库变更**：
 ```sql
+-- FTS5 虚拟表（独立表结构）
 CREATE VIRTUAL TABLE records_fts USING fts5(
     record_id UNINDEXED,
     text,
-    content='records',
     tokenize='unicode61 remove_diacritics 2'
 );
 
--- 自动同步触发器
-CREATE TRIGGER records_ai AFTER INSERT ON records...
-CREATE TRIGGER records_au AFTER UPDATE ON records...
-CREATE TRIGGER records_ad AFTER DELETE ON records...
+-- 自动同步触发器（2026-01-06 修复）
+CREATE TRIGGER records_ai AFTER INSERT ON records BEGIN
+    INSERT INTO records_fts(record_id, text)
+    VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER records_au AFTER UPDATE ON records BEGIN
+    UPDATE records_fts SET text = new.text WHERE record_id = old.id;
+END;
+
+CREATE TRIGGER records_ad AFTER DELETE ON records BEGIN
+    DELETE FROM records_fts WHERE record_id = old.id;
+END;
 ```
+
+**重要说明**：
+- ⚠️ **2026-01-06 修复**：原使用 `content='records'` 配置导致触发器错误，已改为独立 FTS5 表
+- ✅ 使用 `record_id` 字段关联而非 `rowid`
+- ✅ UPDATE 触发器使用直接更新而非删除+插入
 
 **功能**：
 - ✅ 高性能全文搜索（10-100倍提升）

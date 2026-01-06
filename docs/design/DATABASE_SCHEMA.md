@@ -115,6 +115,59 @@ cursor.execute('''
 ''', (app_type, limit, offset))
 ```
 
+## records_fts 表（全文搜索）
+
+### FTS5 虚拟表
+
+```sql
+CREATE VIRTUAL TABLE records_fts USING fts5(
+    record_id UNINDEXED,
+    text,
+    tokenize='unicode61 remove_diacritics 2'
+);
+```
+
+### 自动同步触发器
+
+```sql
+-- 插入触发器
+CREATE TRIGGER records_ai AFTER INSERT ON records BEGIN
+    INSERT INTO records_fts(record_id, text)
+    VALUES (new.id, new.text);
+END;
+
+-- 更新触发器
+CREATE TRIGGER records_au AFTER UPDATE ON records BEGIN
+    UPDATE records_fts SET text = new.text WHERE record_id = old.id;
+END;
+
+-- 删除触发器
+CREATE TRIGGER records_ad AFTER DELETE ON records BEGIN
+    DELETE FROM records_fts WHERE record_id = old.id;
+END;
+```
+
+### 全文搜索示例
+
+```python
+# 搜索记录
+cursor.execute('''
+    SELECT r.id, r.text, r.metadata, r.app_type, r.created_at, f.rank
+    FROM records r
+    INNER JOIN records_fts f ON r.id = f.record_id
+    WHERE records_fts MATCH ? AND r.is_deleted = 0
+    ORDER BY f.rank
+    LIMIT ?
+''', (query, limit))
+```
+
+### 重要说明
+
+- **独立表结构**: FTS5 表是独立的，不使用 `content='records'` 配置
+- **record_id 关联**: 使用 `record_id` 字段与 `records.id` 关联
+- **自动同步**: 触发器确保 FTS 索引与主表数据保持同步
+- **性能提升**: 相比 LIKE 查询，FTS5 性能提升 10-100 倍
+
 ## 性能优化
 
 ### 推荐索引
@@ -128,6 +181,10 @@ CREATE INDEX idx_app_type ON records(app_type);
 
 -- 组合索引
 CREATE INDEX idx_app_type_created_at ON records(app_type, created_at DESC);
+
+-- 用户相关索引
+CREATE INDEX idx_records_user_created ON records(user_id, created_at DESC);
+CREATE INDEX idx_records_not_deleted ON records(is_deleted, user_id);
 ```
 
 ## 数据备份

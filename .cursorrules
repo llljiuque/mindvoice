@@ -793,17 +793,228 @@ docs(readme): 更新安装说明
 - API Key 存储在配置文件中
 - 不在前端暴露敏感配置
 
-## 文档规则
+## 文档管理规则 ⭐
 
-### 代码注释
+### 文档分类原则
+- **根目录**: 只保留 4-5 个核心文档（README.md, CHANGELOG.md, CONTRIBUTING.md, LICENSE）
+- **docs/ 目录**: 结构化存放所有其他文档
+- **过程文档**: 及时归档，避免根目录堆积
+
+### 文档目录结构
+```
+docs/
+├── guides/              # 用户和开发指南
+├── design/              # 架构和技术设计
+├── build/               # 构建和部署文档
+└── archive/             # 过程性文档归档
+    ├── bugfix/          # Bug 修复记录
+    ├── refactor/        # 重构记录
+    ├── feature/         # 功能实现记录
+    └── investigation/   # 系统检查报告
+
+temp_docs/               # 临时文档（不上传到 GitHub）
+├── BUGFIX_*.md         # 开发中的 Bug 修复记录
+├── FEATURE_*.md        # 开发中的功能实现记录
+└── *.md                # 其他临时文档
+```
+
+### 开发过程中的文档工作流 🔄
+
+#### 1. 开发时（临时文档）⭐ 重要
+```bash
+# ✅ 正确：在 temp_docs/ 目录创建临时文档
+temp_docs/BUGFIX_IMAGE_UPLOAD.md
+temp_docs/FEATURE_VOICE_TRANSLATION.md
+temp_docs/REFACTOR_STORAGE_LAYER.md
+
+# ❌ 错误：不要在根目录创建临时文档
+# BUGFIX_IMAGE_UPLOAD.md  # 会污染根目录
+```
+
+**存放规则（强制）**：
+- ✅ **所有临时、过程性文档必须放在 `temp_docs/` 目录**
+- ✅ `temp_docs/` 在 `.gitignore` 中，不会上传到 GitHub
+- ❌ **禁止在根目录创建临时文档**
+- ❌ **禁止在 docs/ 主目录创建临时文档**
+
+**命名规范**：`{TYPE}_{TOPIC}.md`
+- TYPE: BUGFIX, FEATURE, REFACTOR, INVESTIGATION
+- TOPIC: 简短描述主题
+- 可选：添加日期后缀 `{TYPE}_{TOPIC}_20260106.md`
+
+**用途**：
+- 记录问题排查过程
+- 保存技术决策推演
+- 帮助 AI 理解开发上下文
+- 草稿和未完成的文档
+
+#### 2. 开发完成后（清理临时文档）
+```bash
+# 将关键信息提取到 CHANGELOG.md
+# 在 Git commit message 中记录变更
+git commit -m "fix: 修复图片上传时的路径问题"
+
+# 处理 temp_docs/ 中的临时文档：
+# 选项1：有价值的文档归档
+mv temp_docs/BUGFIX_IMAGE_UPLOAD.md docs/archive/bugfix/
+
+# 选项2：无价值的文档删除
+rm temp_docs/BUGFIX_IMAGE_UPLOAD.md
+
+# 选项3：技术设计文档移到正式位置
+mv temp_docs/DATABASE_DESIGN.md docs/design/
+```
+
+**原则**：
+- ✅ 重要变更 → CHANGELOG.md
+- ✅ 技术决策 → docs/design/
+- ✅ 小改动 → Git commit message
+- ✅ 有价值的过程文档 → docs/archive/
+- ✅ 无价值的临时文档 → 删除
+- ❌ 不要让临时文档长期堆积在 temp_docs/
+
+#### 3. 定期清理（保持整洁）
+```bash
+# 查看临时文档
+ls -la temp_docs/
+
+# 批量归档（如果需要）
+mv temp_docs/BUGFIX_*.md docs/archive/bugfix/
+mv temp_docs/FEATURE_*.md docs/archive/feature/
+
+# 清理无用文档
+rm temp_docs/OLD_*.md
+```
+
+**清理时机**：
+- 每次功能完成后（推荐）
+- 每次版本发布前（必须）
+- temp_docs/ 文档超过 10 个时（建议）
+
+**归档位置**：
+| 文档类型 | 特征 | 归档位置 |
+|---------|------|---------|
+| Bug修复 | `BUGFIX_*`, `*_FIX_*` | `docs/archive/bugfix/` |
+| 重构 | `*_REFACTOR_*`, `CLEANUP_*` | `docs/archive/refactor/` |
+| 功能实现 | `FEATURE_*`, `*_IMPLEMENTATION_*` | `docs/archive/feature/` |
+| 系统检查 | `*_CHECK_*`, `*_REPORT`, `*_REVIEW` | `docs/archive/investigation/` |
+
+### 与 AI 协作的文档最佳实践
+
+#### ✅ 推荐做法
+1. **临时文档放 temp_docs/** - 所有开发过程文档必须放在此目录
+2. **使用描述性文件名** - 让 AI 快速定位相关文档
+3. **完成后及时清理** - 删除或归档 temp_docs/ 中的文档
+4. **关键信息写入 CHANGELOG** - 集中记录项目演进
+5. **技术设计文档及时转正** - 从 temp_docs/ 移到 docs/design/
+
+#### ❌ 避免做法（违反将导致根目录混乱）
+1. **❌ 禁止在根目录创建临时文档** - 必须使用 temp_docs/
+2. **❌ 禁止在 docs/ 主目录创建临时文档** - 使用 temp_docs/ 或子目录
+3. **不要生成重复的总结文档** - 如 `*_FINAL_*.md`, `*_SUMMARY_*.md` 重复
+4. **不要保留多个版本** - 保留最新/最完整的版本即可
+5. **不要让 temp_docs/ 堆积超过 10 个文档** - 及时清理
+
+### 文档保留价值评估
+
+#### 处理 temp_docs/ 中的文档
+
+**高价值（归档到 docs/archive/）**
+- ✅ 解决了罕见问题的文档
+- ✅ 包含关键技术决策的文档
+- ✅ 复杂问题的完整排查过程
+
+**中等价值（转为正式文档）**
+- ✅ 技术设计文档 → 移到 docs/design/
+- ✅ 用户指南 → 移到 docs/guides/
+- ✅ 构建说明 → 移到 docs/build/
+
+**低价值（直接删除）**
+- ❌ 内容已整合到 CHANGELOG 或其他正式文档
+- ❌ 简单功能的开发日志
+- ❌ 重复的总结文档
+- ❌ 临时测试记录
+- ❌ 个人笔记和想法
+
+### temp_docs/ 目录使用规则 ⭐
+
+#### 目录作用
+- **不上传到 GitHub**：在 `.gitignore` 中被忽略
+- **临时存储**：开发过程中的所有临时文档
+- **方便清理**：集中管理，避免污染项目结构
+
+#### 强制规则
+```bash
+# ✅ 正确：创建临时文档
+temp_docs/BUGFIX_IMAGE_UPLOAD.md
+temp_docs/FEATURE_AUTH_20260106.md
+temp_docs/NOTES.md
+
+# ❌ 错误：在根目录创建
+BUGFIX_IMAGE_UPLOAD.md           # 违反规则！
+docs/FEATURE_AUTH_20260106.md    # 违反规则！
+```
+
+#### 文档生命周期
+```
+创建 → 开发 → 完成 → 处理
+  ↓      ↓      ↓       ↓
+temp_docs/  →  提取精华  →  归档或删除
+                到CHANGELOG    到archive/
+```
+
+#### 快速操作
+```bash
+# 创建临时文档
+echo "# Bug修复记录" > temp_docs/BUGFIX_XXX.md
+
+# 查看临时文档
+ls -la temp_docs/
+
+# 归档有价值的文档
+mv temp_docs/BUGFIX_XXX.md docs/archive/bugfix/
+
+# 删除无用文档
+rm temp_docs/OLD_*.md
+
+# 转为正式文档
+mv temp_docs/DATABASE_DESIGN.md docs/design/
+```
+
+### 文档管理工具
+
+#### 使用方法
+```bash
+# 分析并归档文档（交互式）
+./scripts/manage_docs.sh
+
+# 注意：manage_docs.sh 不会处理 temp_docs/
+# temp_docs/ 需要手动清理
+```
+
+#### 功能
+- 自动扫描并分类根目录文档
+- 识别可归档的过程性文档
+- 检测重复和过时的文档
+- 交互式归档操作
+- 自动生成归档索引
+
+#### 查看指南
+```bash
+cat docs/DOCUMENT_MANAGEMENT_GUIDE.md
+cat temp_docs/README.md
+```
+
+### 代码注释规则
 - 复杂逻辑必须添加注释
 - 公共 API 必须有文档字符串
 - 注释使用中文，清晰简洁
 
-### 项目文档
+### 项目文档规则
 - `README.md`: 项目介绍和快速开始
 - `docs/`: 详细架构和设计文档
-- 重要变更更新 CHANGELOG
+- `CHANGELOG.md`: 重要变更记录（版本发布时更新）
+- 过程文档归档到 `docs/archive/`（定期执行）
 
 ## 开发工具规则
 
