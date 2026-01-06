@@ -1,12 +1,13 @@
 {
   "name": "mindvoice",
-  "version": "1.9.2",
+  "version": "1.9.5",
   "description": "MindVoice - AI-powered cross-platform desktop voice assistant",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "sync:github": "node scripts/sync-github-snapshot.js",
     "build": "npm run build:vite && npm run build:electron",
     "build:vite": "vite build",
     "build:electron": "tsc -p electron",
