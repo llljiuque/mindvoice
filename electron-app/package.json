@@ -1,6 +1,6 @@
 {
   "name": "mindvoice",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "description": "MindVoice - AI-powered cross-platform desktop voice assistant",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -36,6 +36,7 @@
     "react-dom": "^18.2.0",
     "typescript": "^5.0.0",
     "vite": "^5.0.0",
+    "vite-plugin-svgr": "^4.5.0",
     "wait-on": "^7.2.0"
   },
   "build": {
@@ -74,4 +75,3 @@
     }
   }
 }
-

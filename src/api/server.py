@@ -192,6 +192,13 @@ class ListRecordsResponse(BaseModel):
     error: Optional[Dict[str, Any]] = None  # SystemErrorInfo 对象
 
 
+class GetRecordResponse(BaseModel):
+    """获取单条记录响应"""
+    success: bool
+    record: Optional[RecordItem] = None
+    message: Optional[str] = None
+
+
 class ChatMessage(BaseModel):
     """聊天消息模型"""
     role: str = Field(..., description="角色：system, user, assistant")
@@ -507,10 +514,11 @@ def setup_llm_service():
             summary_agent = SummaryAgent(llm_service)
             logger.info(f"[API] {summary_agent.name} 初始化完成")
             
-            # 初始化 SmartChatAgent
+            # 初始化 SmartChatAgent（使用 voice_service 的 storage_provider）
             smart_chat_agent = SmartChatAgent(
                 llm_service=llm_service,
-                knowledge_service=knowledge_service
+                knowledge_service=knowledge_service,
+                storage_provider=voice_service.storage_provider if voice_service else None
             )
             logger.info(f"[API] {smart_chat_agent.name} 初始化完成")
             
@@ -1108,8 +1116,9 @@ async def list_records(
             RecordItem(
                 id=r['id'],
                 text=r['text'],
-                metadata=r.get('metadata', {}),
-                created_at=r.get('created_at', '')
+                metadata=r['metadata'],  # storage 层已保证是 dict
+                app_type=r['app_type'],
+                created_at=r['created_at']
             )
             for r in records
         ]
@@ -1138,31 +1147,41 @@ async def list_records(
         )
 
 
-@app.get("/api/records/{record_id}", response_model=RecordItem)
+@app.get("/api/records/{record_id}", response_model=GetRecordResponse)
 async def get_record(record_id: str):
     """获取单条记录"""
     if not voice_service or not voice_service.storage_provider:
-        raise HTTPException(status_code=503, detail="存储服务未初始化")
+        return GetRecordResponse(
+            success=False,
+            message="存储服务未初始化"
+        )
     
     try:
         record = voice_service.storage_provider.get_record(record_id)
         if not record:
-            raise HTTPException(status_code=404, detail="记录不存在")
+            return GetRecordResponse(
+                success=False,
+                message="记录不存在"
+            )
         
-        logger.info(f"[get_record] 返回记录: id={record['id']}, app_type={record.get('app_type', 'voice-note')}, text长度={len(record.get('text', ''))}, metadata类型={type(record.get('metadata'))}")
+        logger.info(f"[get_record] 返回记录: id={record['id']}, app_type={record['app_type']}, text长度={len(record['text'])}, metadata类型={type(record['metadata'])}")
         
-        return RecordItem(
-            id=record['id'],
-            text=record['text'],
-            metadata=record.get('metadata', {}),
-            app_type=record.get('app_type', 'voice-note'),  # 添加 app_type
-            created_at=record.get('created_at', '')
+        return GetRecordResponse(
+            success=True,
+            record=RecordItem(
+                id=record['id'],
+                text=record['text'],
+                metadata=record['metadata'],
+                app_type=record['app_type'],
+                created_at=record['created_at']
+            )
         )
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"获取记录失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return GetRecordResponse(
+            success=False,
+            message=f"获取记录失败: {str(e)}"
+        )
 
 
 @app.get("/api/records/{record_id}/export")
@@ -1189,12 +1208,7 @@ async def export_record_markdown(record_id: str, format: str = 'md'):
         # 生成时间戳和标题
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        metadata = record.get('metadata', {})
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except:
-                metadata = {}
+        metadata = record['metadata']  # storage 层已保证是 dict
         
         title = "笔记"
         blocks = metadata.get('blocks', [])
@@ -2235,6 +2249,12 @@ async def smart_chat(request: SmartChatRequest):
         )
     
     try:
+        # 设置用户信息（用于保存记录）
+        if request.device_id:
+            user_id = get_user_id_by_device(request.device_id)
+            if user_id:
+                smart_chat_agent.set_user_info(user_id, request.device_id)
+        
         # 准备参数
         kwargs = {}
         if request.temperature is not None:
@@ -2383,6 +2403,64 @@ async def get_history_status():
     
     summary = smart_chat_agent.get_conversation_summary()
     return SmartChatHistoryResponse(success=True, **summary)
+
+
+@app.get("/api/smartchat/config")
+async def get_smartchat_config():
+    """获取 SmartChat 的 LLM 配置信息
+    
+    返回：
+    {
+        "success": true,
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "temperature": 0.7,
+        "max_tokens": 2000
+    }
+    """
+    if not smart_chat_agent:
+        raise HTTPException(status_code=503, detail="SmartChat 服务不可用")
+    
+    if not llm_service:
+        raise HTTPException(status_code=503, detail="LLM 服务不可用")
+    
+    # 从 LLM 服务获取配置
+    llm_config = llm_service.get_config() if hasattr(llm_service, 'get_config') else {}
+    
+    # 从 config 获取默认值
+    provider = "unknown"
+    model = "unknown"
+    temperature = 0.7
+    max_tokens = None
+    
+    if config:
+        llm_provider_config = config.get('llm', {})
+        provider = llm_provider_config.get('provider', 'unknown')
+        
+        # 根据 provider 获取具体配置
+        if provider == 'deepseek':
+            deepseek_config = llm_provider_config.get('deepseek', {})
+            model = deepseek_config.get('model', 'deepseek-chat')
+            temperature = deepseek_config.get('temperature', 0.7)
+            max_tokens = deepseek_config.get('max_tokens')
+        elif provider == 'openai':
+            openai_config = llm_provider_config.get('openai', {})
+            model = openai_config.get('model', 'gpt-4')
+            temperature = openai_config.get('temperature', 0.7)
+            max_tokens = openai_config.get('max_tokens')
+        elif provider == 'volcengine':
+            volcengine_config = llm_provider_config.get('volcengine', {})
+            model = volcengine_config.get('model', 'unknown')
+            temperature = volcengine_config.get('temperature', 0.7)
+            max_tokens = volcengine_config.get('max_tokens')
+    
+    return {
+        "success": True,
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens
+    }
 
 
 # ==================== 清理服务 API ====================

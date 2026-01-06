@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { AppLayout } from '../../shared/AppLayout';
 import { StatusIndicator, AppStatusType } from '../../shared/StatusIndicator';
-import { AppButton, ButtonGroup } from '../../shared/AppButton';
+import { AppButton } from '../../shared/AppButton';
 import { WelcomeScreen } from './WelcomeScreen';
 import './SmartChat.css';
 
@@ -17,6 +17,7 @@ interface Message {
 // 导出接口供 App.tsx 使用
 export interface SmartChatHandle {
   appendAsrText: (text: string, isDefiniteUtterance?: boolean) => void;
+  loadConversation: (messages: Message[]) => void;
 }
 
 interface SmartChatProps {
@@ -47,19 +48,24 @@ export const SmartChat = forwardRef<SmartChatHandle, SmartChatProps>(({
   const [isLoading, setIsLoading] = useState(false);
   const [useKnowledge, setUseKnowledge] = useState(true);
   const [isPressingMic, setIsPressingMic] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // 判断是否显示欢迎界面
   const showWelcome = !isWorkSessionActive;
 
-  // 暴露接口给父组件（App.tsx）- 空实现，不使用ASR
+  // 暴露接口给父组件（App.tsx）
   useImperativeHandle(ref, () => ({
     appendAsrText: (text: string, isDefiniteUtterance: boolean = false) => {
       // 空实现 - 语音输入接口预留，由用户后续集成
       console.log('[SmartChat] ASR接口预留，暂不实现', { text, isDefiniteUtterance });
+    },
+    loadConversation: (conversationMessages: Message[]) => {
+      console.log('[SmartChat] 恢复对话', { messageCount: conversationMessages.length });
+      setMessages(conversationMessages);
     }
-  }), [isPressingMic]);
+  }), []);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -119,7 +125,7 @@ export const SmartChat = forwardRef<SmartChatHandle, SmartChatProps>(({
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) break;  // 流结束信号
 
           const chunk = decoder.decode(value);
           const lines = chunk.split('\n');
@@ -170,10 +176,15 @@ export const SmartChat = forwardRef<SmartChatHandle, SmartChatProps>(({
     if (!confirm('确定要清空对话历史吗？')) return;
 
     try {
+      // 清空后端对话历史（后端会自动保存）
       await fetch(`${API_BASE_URL}/api/smartchat/clear_history`, {
         method: 'POST'
       });
+      
+      // 清空前端状态
       setMessages([]);
+      
+      console.log('[SmartChat] ✅ 对话已清空');
     } catch (error) {
       console.error('[SmartChat] 清空历史失败:', error);
       alert('清空历史失败');
@@ -212,7 +223,16 @@ export const SmartChat = forwardRef<SmartChatHandle, SmartChatProps>(({
 
   // 处理开始工作按钮
   const handleStartWork = () => {
+    // 清空当前对话，开始新会话
+    setMessages([]);
     onStartWork();
+  };
+  
+  // 处理结束工作按钮
+  const handleEndWork = () => {
+    // 清空对话（后端会自动保存）
+    setMessages([]);
+    onEndWork();
   };
 
   // 计算 App 状态
@@ -271,7 +291,7 @@ export const SmartChat = forwardRef<SmartChatHandle, SmartChatProps>(({
               </AppButton>
               
               <AppButton
-                onClick={onEndWork}
+                onClick={handleEndWork}
                 disabled={asrState !== 'idle'}
                 variant="ghost"
                 size="medium"

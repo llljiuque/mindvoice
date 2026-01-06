@@ -6,20 +6,23 @@
 
 **架构**: Electron前端 + Python API后端（前后端分离，便于替换前端框架）
 
-**版本**: 1.4.0 | **发布日期**: 2026-01-02
+**版本**: 1.8.2 | **发布日期**: 2026-01-06
 
 ## ✨ 核心特性
 
 - 🎤 **实时语音识别** - 支持流式ASR，实时转文字，智能VAD语音活动检测
 - 🤖 **AI大模型集成** - 基于LiteLLM，支持100+种LLM服务
-- 📝 **语音笔记** - 实时记录和编辑，支持富文本块编辑器
+- 📝 **语音笔记** - 实时记录和编辑，支持富文本块编辑器和图片粘贴
 - 💬 **智能助手** - 与AI对话，支持知识库检索增强（RAG），流式智能回答
 - 🧘 **禅应用** - 与一禅小和尚对话，获得心灵平静与禅意智慧
 - 📚 **知识库管理** - 文档上传、向量检索，支持知识库增强对话
+- 🌍 **多语言翻译** - 支持10种语言实时翻译，基于AI智能翻译
+- 📦 **Markdown导出** - 一键导出笔记为Markdown格式，自动打包图片
 - 💾 **历史记录** - SQLite存储，支持按应用分类和搜索
 - 🔌 **插件化架构** - 可扩展ASR和LLM提供商
 - 🎯 **系统托盘** - 便捷的系统托盘控制和快捷操作
 - 📊 **智能摘要** - 基于Agent的内容摘要和总结功能
+- 🚀 **高性能IPC通信** - Electron IPC替代WebSocket，响应速度提升50-80%
 
 ## 🎯 四大应用
 
@@ -31,7 +34,10 @@
 - 智能分段（基于utterance）
 - 支持暂停/恢复录音
 - 富文本格式化（加粗、斜体、标题等）
+- 图片粘贴支持（Ctrl+V / Cmd+V）
 - 智能摘要生成（基于Agent）
+- 多语言翻译（支持10种语言）
+- Markdown导出（自动打包图片）
 - 一键保存和复制
 - 历史记录管理
 
@@ -72,15 +78,24 @@
 
 本项目采用前后端分离的多应用架构：
 
-- **后端**: Python API服务器（FastAPI + WebSocket）
+- **后端**: Python API服务器（FastAPI）
 - **前端**: Electron + React + TypeScript（多应用架构）
-- **通信**: HTTP REST API + WebSocket实时推送
-- **AI服务**: ASR（火山引擎）+ LLM（LiteLLM）
+- **通信**: HTTP REST API + Electron IPC（进程间通信）
+- **AI服务**: ASR（火山引擎）+ LLM（LiteLLM）+ RAG（ChromaDB）
+- **数据存储**: SQLite（历史记录、会员信息）+ ChromaDB（向量数据库）
+
+**架构亮点**：
+- ✅ **IPC通信**: 使用Electron IPC替代WebSocket，响应速度提升50-80%，稳定性显著增强
+- ✅ **模块化设计**: 插件化的ASR、LLM、存储提供商
+- ✅ **Agent系统**: 智能摘要、智能对话、翻译等Agent
+- ✅ **跨平台存储**: 统一的跨平台数据存储方案
 
 详细架构说明请参考：
-- [系统架构文档](docs/ARCHITECTURE.md)
-- [多应用架构说明](docs/MULTI_APP_ARCHITECTURE.md)
-- [LLM集成指南](docs/LLM_INTEGRATION.md)
+- [系统架构文档](docs/SYSTEM_ARCHITECTURE.md)
+- [数据库架构](docs/DATABASE_SCHEMA.md)
+- [跨平台存储](docs/CROSS_PLATFORM_STORAGE.md)
+- [API参考](docs/API_REFERENCE.md)
+- [图标系统](docs/ICON_SYSTEM_GUIDE.md) - 统一图标管理
 
 ## 🚀 快速开始
 
@@ -138,9 +153,9 @@ cp config.yml.example config.yml
 **重要：** `config.yml` 包含敏感信息，已添加到 `.gitignore`。
 
 详细配置说明：
-- [LLM集成指南](docs/LLM_INTEGRATION.md) - 支持的LLM服务和配置方法
-- [VAD安装指南](docs/vad_installation_guide.md) - VAD功能安装和使用
 - [配置示例](config.yml.example) - 完整的配置文件示例
+- [跨平台存储](docs/CROSS_PLATFORM_STORAGE.md) - 跨平台数据存储配置
+- [系统架构](docs/SYSTEM_ARCHITECTURE.md) - 系统架构和配置说明
 
 6. **启动应用**：
 
@@ -205,10 +220,13 @@ npm run dev
 │   └── electron/                 # Electron主进程
 │
 ├── docs/                         # 项目文档
-│   ├── ARCHITECTURE.md           # 系统架构
-│   ├── MULTI_APP_ARCHITECTURE.md # 多应用架构
-│   ├── LLM_INTEGRATION.md        # LLM集成指南
-│   ├── vad_installation_guide.md # VAD安装指南
+│   ├── SYSTEM_ARCHITECTURE.md    # 系统架构
+│   ├── API_REFERENCE.md          # API参考文档
+│   ├── DATABASE_SCHEMA.md        # 数据库架构
+│   ├── IMAGE_HANDLING.md         # 图片处理文档
+│   ├── CROSS_PLATFORM_STORAGE.md # 跨平台存储
+│   ├── ICON_SYSTEM_GUIDE.md      # 图标系统指南
+│   ├── build/                    # 构建和打包文档
 │   └── ...                       # 其他文档
 │
 ├── config.yml                    # 配置文件（需自行创建）
@@ -259,7 +277,10 @@ vad:
   post_speech_padding_ms: 300      # 语音后缓冲
 ```
 
-**安装**：需要安装 `webrtcvad` 库（参见 [VAD安装指南](docs/vad_installation_guide.md)）
+**安装**：需要安装 `webrtcvad` 库
+```bash
+pip install webrtcvad
+```
 
 ### 音频缓冲区管理
 
@@ -287,7 +308,7 @@ audio:
 - 高质量录音：120-180秒
 - 极限长时：60秒（最小化内存）
 
-详见：[缓冲区内存修复文档](docs/buffer_memory_fix.md)
+**注意**：此功能已内置，无需额外配置
 
 ### LLM配置
 
@@ -337,10 +358,13 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 2. 点击"开始录音"按钮开始语音识别
 3. 实时显示识别结果，支持实时编辑
 4. 使用格式工具栏进行富文本编辑（加粗、斜体、标题等）
-5. 点击"暂停"可暂停录音，点击"恢复"继续
-6. 点击"生成摘要"获取AI智能摘要
-7. 点击"停止并保存"保存到历史记录
-8. 支持复制、删除等操作
+5. 使用 Ctrl+V / Cmd+V 粘贴图片到笔记中
+6. 点击"暂停"可暂停录音，点击"恢复"继续
+7. 点击"生成摘要"获取AI智能摘要
+8. 点击"翻译"选择目标语言进行翻译（支持10种语言）
+9. 点击"导出"下载Markdown格式笔记（自动打包图片）
+10. 点击"停止并保存"保存到历史记录
+11. 支持复制、删除等操作
 
 ### 智能助手 (SmartChat)
 1. 点击侧边栏 💬 图标进入智能助手
@@ -378,12 +402,13 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 
 ### 添加新的应用
 
-参考 [多应用架构文档](docs/MULTI_APP_ARCHITECTURE.md) 的详细指南：
+参考现有应用的实现（VoiceNote、SmartChat、VoiceZen）：
 
 1. 在 `electron-app/src/components/apps/` 创建新应用目录
-2. 实现应用组件
-3. 更新 `Sidebar.tsx` 和 `App.tsx`
-4. 可复用共享服务（ASR、LLM、存储）
+2. 实现应用组件（参考 VoiceNote.tsx）
+3. 在 `src/api/server.py` 添加对应的API端点
+4. 更新 `Sidebar.tsx` 和 `App.tsx`
+5. 可复用共享服务（ASR、LLM、存储）
 
 ### 添加新的 ASR 提供商
 
@@ -394,9 +419,18 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 
 ### 添加新的 LLM 提供商
 
-项目使用 LiteLLM，支持100+种LLM服务，只需在 `config.yml` 中配置即可。
+项目使用 LiteLLM，支持100+种LLM服务，只需在 `config.yml` 中配置即可：
 
-详见：[LLM集成指南](docs/LLM_INTEGRATION.md)
+```yaml
+llm:
+  provider: your-provider
+  api_key: "your-api-key"
+  base_url: https://api.example.com/v1
+  model: your-model-name
+  max_context_tokens: 128000
+```
+
+支持的提供商包括：OpenAI、Claude、通义千问、DeepSeek、文心一言等。
 
 ## 📊 开发状态
 
@@ -407,33 +441,42 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 - ✅ 多应用架构设计
 - ✅ 插件化系统
 - ✅ 配置管理系统
+- ✅ IPC进程间通信（替代WebSocket，性能提升50-80%）
+- ✅ 跨平台数据存储方案
 
 **AI服务集成**：
-- ✅ ASR集成（火山引擎流式识别）
-- ✅ VAD语音活动检测（WebRTC VAD，可选）
+- ✅ ASR集成（火山引擎流式识别，支持双向流式优化）
+- ✅ VAD语音活动检测（WebRTC VAD，可选，节约40-60%成本）
 - ✅ LLM集成（LiteLLM，支持100+种模型）
-- ✅ 实时WebSocket通信
-- ✅ 流式响应处理
-- ✅ Agent智能体系统（摘要生成、智能对话等）
-- ✅ 知识库服务（向量存储和检索，RAG增强）
+- ✅ 流式响应处理（实时逐字显示）
+- ✅ Agent智能体系统（摘要、对话、翻译等）
+- ✅ 知识库服务（ChromaDB向量存储和检索，RAG增强）
 
 **四大应用**：
-- ✅ 语音笔记应用（完整功能，支持富文本编辑和智能摘要）
-- ✅ 智能助手应用（完整功能，支持知识库检索增强和流式对话）
-- ✅ 禅应用（完整对话功能，禅意UI体验）
-- ✅ 知识库应用（文档上传、管理和检索）
+- ✅ 语音笔记应用（富文本编辑、图片支持、智能摘要、多语言翻译、Markdown导出）
+- ✅ 智能助手应用（知识库检索增强、流式对话、多轮对话）
+- ✅ 禅应用（一禅小和尚对话、禅意UI、木鱼交互）
+- ✅ 知识库应用（文档上传、管理、向量检索）
 
 **数据管理**：
-- ✅ SQLite存储
-- ✅ 历史记录管理
-- ✅ 按应用分类记录
-- ✅ 分页加载
+- ✅ SQLite数据库（历史记录、元数据）
+- ✅ ChromaDB向量数据库（知识库）
+- ✅ 图片存储管理（Base64上传、本地存储）
+- ✅ 历史记录管理（按应用分类、分页加载）
+- ✅ 自动保存服务（智能保存队列）
+
+**内容处理**：
+- ✅ 图片粘贴和显示（Ctrl+V / Cmd+V）
+- ✅ 多语言翻译（支持10种语言：中英日韩法德西俄意葡）
+- ✅ Markdown导出（自动打包图片为ZIP）
+- ✅ 智能摘要生成（基于Agent）
 
 **用户界面**：
 - ✅ 现代化UI设计（深色/浅色主题）
 - ✅ 实时状态指示（ASR、API连接）
 - ✅ Toast通知系统
-- ✅ 富文本块编辑器（支持格式化）
+- ✅ 富文本块编辑器（支持格式化、图片）
+- ✅ 翻译面板（语言选择、译文显示）
 - ✅ 系统托盘集成（最小化到托盘）
 - ✅ 响应式布局
 
@@ -443,25 +486,29 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 - ⏳ 智能助手语音输入集成
 - ⏳ 更多ASR提供商（百度、讯飞、Azure等）
 - ⏳ 离线语音识别
-- ⏳ 云端同步（支持多设备）
-- ⏳ 多语言界面（国际化）
+- ⏳ 多语言界面（国际化i18n）
 - ⏳ 全局快捷键支持
-- ⏳ 更多Agent智能体（翻译、纠错等）
+- ⏳ 更多Agent智能体（纠错、润色、总结等）
 - ⏳ 语音命令执行
-- ⏳ 知识库支持更多文档格式（PDF、Word等）
+- ⏳ 知识库支持更多文档格式（PDF、Word、HTML等）
+- ⏳ PDF导出功能
+- ⏳ 双语对照翻译
+- ⏳ Windows和Linux平台打包
+- ⏳ 自动更新功能
+- ⏳ 移动端适配（React Native）
 
 ## 🛠️ 技术栈
 
 ### 后端
 - **Python 3.9+** - 核心语言
 - **FastAPI** - 高性能异步API框架
-- **WebSocket** - 实时双向通信
 - **sounddevice** - 跨平台音频录制
-- **webrtcvad** - VAD语音活动检测（可选）
+- **webrtcvad** - VAD语音活动检测（可选，节约40-60%成本）
 - **aiohttp** - 异步HTTP客户端
 - **SQLite** - 轻量级嵌入式数据库
 - **LiteLLM** - 统一LLM接口（支持100+种模型）
 - **ChromaDB** - 向量数据库（知识库存储和检索）
+- **sentence-transformers** - 文本向量化模型
 - **PyYAML** - 配置文件解析
 
 ### 前端
@@ -469,13 +516,15 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 - **React 18** - UI框架
 - **TypeScript** - 类型安全
 - **Vite** - 快速构建工具
+- **Electron IPC** - 进程间通信（高性能）
 - **CSS3** - 现代样式
 
 ### AI服务
-- **火山引擎ASR** - 流式语音识别（支持双向流式优化版本）
+- **火山引擎ASR** - 流式语音识别（支持双向流式优化版本bigmodel_async）
 - **LiteLLM** - 支持OpenAI、Claude、通义千问、DeepSeek等100+种LLM
 - **WebRTC VAD** - 智能语音活动检测，节约40-60%的ASR成本
 - **ChromaDB** - 向量数据库，支持知识库文档的向量化和检索（RAG）
+- **Agent系统** - 智能摘要Agent、智能对话Agent、翻译Agent
 
 ## 🔌 扩展性
 
@@ -490,28 +539,43 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 ## 📡 API接口
 
 - **HTTP REST API**: `http://127.0.0.1:8765/api/`
-- **WebSocket**: `ws://127.0.0.1:8765/ws`
+- **Electron IPC**: 进程间通信（ASR实时数据流）
 
 主要接口：
-- `/api/recording/*` - 录音控制
-- `/api/llm/*` - LLM对话
-- `/api/smartchat/*` - 智能助手对话（支持知识库检索）
+- `/api/recording/*` - 录音控制（启动、停止、暂停、恢复）
+- `/api/llm/*` - LLM对话（流式响应）
+- `/api/smartchat/*` - 智能助手对话（支持知识库检索RAG）
 - `/api/knowledge/*` - 知识库管理（上传、查询、删除）
-- `/api/records/*` - 历史记录管理
+- `/api/records/*` - 历史记录管理（保存、加载、更新、删除）
+- `/api/images/*` - 图片管理（上传、获取）
+- `/api/translate` - 翻译服务（多语言翻译）
 - `/api/audio/*` - 音频设备管理
 
-详细API文档请参考 [系统架构文档](docs/ARCHITECTURE.md)
+详细API文档请参考 [API参考文档](docs/API_REFERENCE.md)
 
 ## 📚 文档
 
-- [系统架构](docs/ARCHITECTURE.md) - 完整的架构设计说明
-- [多应用架构](docs/MULTI_APP_ARCHITECTURE.md) - 如何添加新应用
-- [LLM集成指南](docs/LLM_INTEGRATION.md) - LLM配置和使用
-- [VAD安装指南](docs/vad_installation_guide.md) - VAD功能配置
-- [音频流程](docs/audio_to_asr_flow.md) - 音频处理流程
-- [优化指南](docs/OPTIMIZATION_GUIDE.md) - 性能优化建议（如有）
-- [版本管理](docs/VERSION_MANAGEMENT.md) - 版本号管理规范（如有）
-- [禅应用设计](docs/ZEN_APP_DESIGN.md) - 禅应用的设计文档（如有）
+### 核心文档
+- [系统架构](docs/SYSTEM_ARCHITECTURE.md) - 完整的架构设计说明
+- [API参考](docs/API_REFERENCE.md) - API接口文档
+- [快速开始](docs/GETTING_STARTED.md) - 快速入门指南
+- [状态管理](docs/状态管理_简洁版.md) - 应用状态管理
+
+### 功能文档
+- [数据库架构](docs/DATABASE_SCHEMA.md) - 数据库表结构和使用
+- [图片处理](docs/IMAGE_HANDLING.md) - 图片上传、存储、显示
+- [跨平台存储](docs/CROSS_PLATFORM_STORAGE.md) - 跨平台数据存储方案
+- [图标系统](docs/ICON_SYSTEM_GUIDE.md) - 统一图标管理和使用
+- [自动保存服务](docs/AutoSaveService_技术文档.md) - 自动保存机制
+
+### 构建和部署
+- [构建指南](docs/build/BUILD_GUIDE.md) - 应用构建说明
+- [打包文档](docs/build/PACKAGING.md) - 应用打包和分发
+- [故障排除](docs/build/TROUBLESHOOTING.md) - 常见问题解决
+
+### 其他文档
+- [贡献指南](CONTRIBUTING.md) - 如何贡献代码
+- [更新日志](CHANGELOG.md) - 版本更新历史
 
 ## 🤝 贡献
 
@@ -532,8 +596,8 @@ pip install sentence-transformers>=2.2.2 chromadb>=0.4.22
 
 **深圳王哥 & AI**
 - Email: manwjh@126.com
-- 项目: MindVoice v1.4.0
-- 日期: 2026-01-02
+- 项目: MindVoice v1.8.2
+- 日期: 2026-01-06
 
 ## 🙏 致谢
 

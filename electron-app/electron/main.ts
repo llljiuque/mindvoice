@@ -158,7 +158,9 @@ function startPythonServer(): Promise<void> {
       apiArgs = [path.join(__dirname, '../../api_server.py'), '--host', API_HOST, '--port', String(API_PORT)];
     } else {
       // 生产环境：直接运行打包好的可执行文件
-      const apiPath = path.join(process.resourcesPath, 'python-backend', 'mindvoice-api');
+      // Windows 平台需要添加 .exe 扩展名
+      const exeName = process.platform === 'win32' ? 'mindvoice-api.exe' : 'mindvoice-api';
+      const apiPath = path.join(process.resourcesPath, 'python-backend', exeName);
       
       // macOS/Linux: 确保可执行文件有执行权限
       if (process.platform !== 'win32') {

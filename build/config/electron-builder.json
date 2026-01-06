@@ -71,7 +71,7 @@
         "arch": ["x64"]
       }
     ],
-    "icon": "../../build/resources/icons/icon.ico",
+    "icon": "build/icons/icon.ico",
     "artifactName": "${productName}-${version}-windows-${arch}.${ext}",
     "signAndEditExecutable": false,
     "signDlls": false
@@ -86,7 +86,7 @@
   },
   "linux": {
     "target": ["AppImage", "deb", "rpm"],
-    "icon": "../../build/resources/icons/icon.png",
+    "icon": "build/icons/icon.png",
     "category": "Utility",
     "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
   },

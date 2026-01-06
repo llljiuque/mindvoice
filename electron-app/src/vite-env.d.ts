@@ -1,8 +1,17 @@
 /// <reference types="vite/client" />
+/// <reference types="vite-plugin-svgr/client" />
 
+// SVG 作为 URL 字符串导入
 declare module '*.svg' {
   const content: string;
   export default content;
+}
+
+// SVG 作为 React 组件导入（使用 ?react 后缀）
+declare module '*.svg?react' {
+  import * as React from 'react';
+  const SVGComponent: React.FC<React.SVGProps<SVGSVGElement>>;
+  export default SVGComponent;
 }
 
 declare module '*.png' {

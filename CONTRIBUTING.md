@@ -138,6 +138,31 @@ Thank you for your interest in contributing to MindVoice! This document provides
   - Boolean variables: Use `is/has/should` prefix (e.g., `isConnected`)
   - Event handlers: Use `handle` prefix (e.g., `handleClick`)
 
+### Icons (图标系统)
+- **统一使用 Icon 组件** - 不要直接使用 `<img>` 标签或导入 SVG 文件
+  ```tsx
+  // ✅ 正确
+  import { Icon } from '@/components/shared/Icon';
+  <Icon name="mic" size={24} color="#1890ff" />
+  
+  // ❌ 错误
+  import micIcon from '@/assets/icons/ui/mic.svg';
+  <img src={micIcon} />
+  ```
+- **图标分类**:
+  - UI 图标：放在 `src/assets/icons/ui/` 目录
+  - 托盘图标：放在 `src/assets/icons/tray/` 目录
+  - 应用图标：放在 `src/assets/icons/app/` 目录
+- **添加新图标**:
+  1. 将 SVG 文件放到对应目录（确保使用 `currentColor`）
+  2. 在 `iconRegistry.ts` 中注册图标
+  3. 使用 `<Icon name="new-icon" />`
+- **图标规范**:
+  - 使用 SVG 格式（UI 图标）
+  - 颜色使用 `currentColor` 以支持主题
+  - 文件命名：kebab-case（如 `mic.svg`）
+- **详细文档**: 查看 [docs/ICON_SYSTEM_GUIDE.md](docs/ICON_SYSTEM_GUIDE.md)
+
 ### Git Commit Messages
 
 Follow this format:

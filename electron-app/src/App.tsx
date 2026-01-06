@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Sidebar, AppView } from './components/shared/Sidebar';
 import { VoiceNote } from './components/apps/VoiceNote/VoiceNote';
-import { SmartChat } from './components/apps/SmartChat/SmartChat';
+import { SmartChat, SmartChatHandle } from './components/apps/SmartChat/SmartChat';
 import VoiceZen from './components/apps/VoiceZen/VoiceZen';
 import { KnowledgeBase } from './components/apps/KnowledgeBase/KnowledgeBase';
 import { MembershipContainer } from './components/apps/Membership/MembershipContainer';
@@ -78,6 +78,7 @@ function App() {
     finalizeSummaryBlock: () => void;
     removeSummaryBlock: () => void;
   } | null>(null);
+  const smartChatRef = useRef<SmartChatHandle | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const dbSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -1188,38 +1189,88 @@ function App() {
     }
     
     try {
-      // 使用 AutoSave 恢复
-      const recoveredData = await voiceNoteAutoSave.recover(recordId);
+      // 获取记录详情，判断 app_type
+      const response = await fetch(`${API_BASE_URL}/api/records/${recordId}`);
+      const data = await response.json();
       
-      if (recoveredData && recoveredData.blocks) {
-        console.log('[历史记录] 恢复成功', {
-          blocksCount: recoveredData.blocks.length,
-          hasNoteInfo: !!recoveredData.noteInfo,
-        });
+      if (!data.success || !data.record) {
+        console.warn('[历史记录] 记录不存在');
+        setToast({ message: '记录不存在', type: 'error' });
+        return;
+      }
+      
+      const record = data.record;
+      const appType = record.app_type || 'voice-note';
+      
+      console.log('[历史记录] 记录类型:', appType);
+      
+      // 根据 app_type 分别处理
+      if (appType === 'voice-note') {
+        // VoiceNote 恢复逻辑
+        const recoveredData = await voiceNoteAutoSave.recover(recordId);
         
-        // 设置当前工作ID
-        setCurrentWorkingRecordId(recordId);
-        voiceNoteAutoSave.setCurrentRecordId(recordId);
-        
-        // 恢复 blocks
-        setInitialBlocks(recoveredData.blocks);
-        
-        // 提取文本（用于显示）
-        const textContent = recoveredData.blocks
-          .filter((b: any) => b.type !== 'note-info' && !b.isBufferBlock)
-          .map((b: any) => b.content)
-          .filter((text: string) => text.trim())
-          .join('\n');
-        setText(textContent);
-        
-        // 切换到语音笔记并启动工作会话
-        setActiveView('voice-note');
-        startWorkSession('voice-note', recordId);
-        
-        setToast({ message: '已恢复笔记，可以继续编辑', type: 'success' });
+        if (recoveredData && recoveredData.blocks) {
+          console.log('[历史记录] VoiceNote 恢复成功', {
+            blocksCount: recoveredData.blocks.length,
+            hasNoteInfo: !!recoveredData.noteInfo,
+          });
+          
+          // 设置当前工作ID
+          setCurrentWorkingRecordId(recordId);
+          voiceNoteAutoSave.setCurrentRecordId(recordId);
+          
+          // 恢复 blocks
+          setInitialBlocks(recoveredData.blocks);
+          
+          // 提取文本（用于显示）
+          const textContent = recoveredData.blocks
+            .filter((b: any) => b.type !== 'note-info' && !b.isBufferBlock)
+            .map((b: any) => b.content)
+            .filter((text: string) => text.trim())
+            .join('\n');
+          setText(textContent);
+          
+          // 切换到语音笔记并启动工作会话
+          setActiveView('voice-note');
+          startWorkSession('voice-note', recordId);
+          
+          setToast({ message: '已恢复笔记，可以继续编辑', type: 'success' });
+        } else {
+          console.warn('[历史记录] VoiceNote 恢复失败，数据为空');
+          setToast({ message: '记录内容为空', type: 'error' });
+        }
+      } else if (appType === 'smart-chat') {
+        // SmartChat 恢复逻辑
+        if (record.metadata?.messages && Array.isArray(record.metadata.messages)) {
+          console.log('[历史记录] SmartChat 恢复成功', {
+            messagesCount: record.metadata.messages.length,
+          });
+          
+          // 切换到 SmartChat 并启动工作会话
+          setActiveView('smart-chat');
+          startWorkSession('smart-chat', recordId);
+          
+          // 等待组件渲染后恢复对话
+          setTimeout(() => {
+            if (smartChatRef.current) {
+              smartChatRef.current.loadConversation(record.metadata.messages);
+              setToast({ message: '已恢复对话，可以继续聊天', type: 'success' });
+            } else {
+              console.warn('[历史记录] SmartChat ref 未初始化');
+              setToast({ message: '恢复对话失败', type: 'error' });
+            }
+          }, 100);
+        } else {
+          console.warn('[历史记录] SmartChat 记录无消息数据');
+          setToast({ message: '对话记录为空', type: 'error' });
+        }
+      } else if (appType === 'voice-zen') {
+        // VoiceZen 恢复逻辑（暂不支持）
+        console.warn('[历史记录] VoiceZen 暂不支持恢复');
+        setToast({ message: 'VoiceZen 记录暂不支持恢复', type: 'info' });
       } else {
-        console.warn('[历史记录] 恢复失败，数据为空');
-        setToast({ message: '记录内容为空', type: 'error' });
+        console.warn('[历史记录] 未知的 app_type:', appType);
+        setToast({ message: '未知的记录类型', type: 'error' });
       }
     } catch (e) {
       console.error('[历史记录] 恢复失败:', e);
@@ -1290,6 +1341,7 @@ function App() {
 
         {activeView === 'smart-chat' && (
           <SmartChat 
+            ref={smartChatRef}
             asrState={asrState}
             onAsrStart={() => handleAsrStart('smart-chat')}
             onAsrStop={handleAsrStop}

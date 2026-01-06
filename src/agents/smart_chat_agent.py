@@ -4,6 +4,9 @@ SmartChat Agent
 智能对话助手，支持上下文记忆和知识库检索增强(RAG)
 """
 from typing import AsyncIterator, Union, Optional, Dict, Any, List
+import uuid
+import json
+from datetime import datetime
 from .base_agent import BaseAgent
 from .prompts import PromptLoader
 
@@ -22,6 +25,7 @@ class SmartChatAgent(BaseAgent):
         self, 
         llm_service, 
         knowledge_service=None,
+        storage_provider=None,
         config: Optional[Dict[str, Any]] = None
     ):
         """初始化 SmartChatAgent
@@ -29,12 +33,16 @@ class SmartChatAgent(BaseAgent):
         Args:
             llm_service: LLM服务实例
             knowledge_service: 知识库服务实例（可选）
+            storage_provider: 存储服务实例（可选，用于保存对话记录）
             config: Agent配置（可选）
         """
         super().__init__(llm_service, config)
         
         # 知识库服务
         self.knowledge_service = knowledge_service
+        
+        # 存储服务
+        self.storage_provider = storage_provider
         
         # 加载提示词配置
         self.prompt_config = PromptLoader.load('smart_chat_agent')
@@ -61,6 +69,13 @@ class SmartChatAgent(BaseAgent):
         # 对话历史管理
         self.conversation_history: List[Dict[str, str]] = []
         self.max_history_turns = config.get('max_history_turns', 10) if config else 10
+        
+        # 当前对话会话
+        self.current_record_id: Optional[str] = None
+        self.session_start_time: Optional[float] = None
+        self.use_knowledge: bool = True
+        self.user_id: Optional[str] = None
+        self.device_id: Optional[str] = None
     
     @property
     def name(self) -> str:
@@ -98,7 +113,118 @@ class SmartChatAgent(BaseAgent):
     def clear_history(self):
         """清空对话历史"""
         self.conversation_history = []
+        self.current_record_id = None
+        self.session_start_time = None
         self.logger.info(f"[{self.name}] 对话历史已清空")
+    
+    def set_user_info(self, user_id: str, device_id: str):
+        """设置用户信息（用于保存记录）"""
+        self.user_id = user_id
+        self.device_id = device_id
+    
+    async def save_conversation(self, use_knowledge: bool = True) -> Optional[str]:
+        """保存当前对话到数据库
+        
+        Args:
+            use_knowledge: 是否使用了知识库
+            
+        Returns:
+            记录ID，如果保存失败则返回 None
+        """
+        if not self.storage_provider:
+            self.logger.warn(f"[{self.name}] 存储服务未配置，无法保存对话")
+            return None
+        
+        if len(self.conversation_history) < 2:
+            self.logger.warn(f"[{self.name}] 对话内容不足，无法保存")
+            return None
+        
+        try:
+            # 构建 messages 数组
+            import time
+            base_timestamp = int(time.time() * 1000)
+            messages = []
+            for i, msg in enumerate(self.conversation_history):
+                messages.append({
+                    'id': str(base_timestamp + i),
+                    'role': msg['role'],
+                    'content': msg['content'],
+                    'timestamp': base_timestamp + i
+                })
+            
+            # 计算时间信息
+            first_msg = messages[0]
+            last_msg = messages[-1]
+            first_time = datetime.fromtimestamp(first_msg['timestamp'] / 1000).isoformat() + 'Z'
+            last_time = datetime.fromtimestamp(last_msg['timestamp'] / 1000).isoformat() + 'Z'
+            duration = (last_msg['timestamp'] - first_msg['timestamp']) / 1000
+            
+            # 生成对话标题（使用第一条用户消息）
+            title = messages[0]['content'][:30] + ('...' if len(messages[0]['content']) > 30 else '')
+            
+            # 构建 metadata
+            metadata = {
+                'messages': messages,
+                'conversation_metadata': {
+                    'total_messages': len(messages),
+                    'total_turns': len(messages) // 2,
+                    'first_message_time': first_time,
+                    'last_message_time': last_time,
+                    'conversation_duration': duration,
+                    'use_knowledge': use_knowledge,
+                    'use_history': True,
+                    'knowledge_top_k': 3,
+                    'llm_provider': getattr(self.llm_service, 'provider', 'unknown'),
+                    'llm_model': getattr(self.llm_service, 'model', 'unknown'),
+                    'temperature': self.config.get('temperature', 0.7),
+                    'max_tokens': self.config.get('max_tokens'),
+                    'max_history_turns': self.max_history_turns,
+                    'language': 'zh-CN',
+                    'session_id': f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                    'title': title
+                },
+                'message_count': len(messages),
+                'use_knowledge': use_knowledge,
+                'app_type': 'smart-chat'
+            }
+            
+            # 生成纯文本
+            text = '\n\n'.join([
+                f"[{'用户' if msg['role'] == 'user' else '助手'}] {datetime.fromtimestamp(msg['timestamp']/1000).strftime('%H:%M')}\n{msg['content']}"
+                for msg in messages
+            ])
+            
+            # 保存到数据库
+            if self.current_record_id:
+                # 更新已有记录
+                success = self.storage_provider.update_record(
+                    self.current_record_id,
+                    text=text,
+                    metadata=metadata,
+                    user_id=self.user_id,
+                    device_id=self.device_id
+                )
+                if success:
+                    self.logger.info(f"[{self.name}] ✅ 对话记录已更新: {self.current_record_id}")
+                    return self.current_record_id
+            else:
+                # 创建新记录
+                record_id = self.storage_provider.save_record(
+                    text=text,
+                    metadata=metadata,
+                    user_id=self.user_id,
+                    device_id=self.device_id
+                )
+                if record_id:
+                    self.current_record_id = record_id
+                    self.logger.info(f"[{self.name}] ✅ 对话记录已保存: {record_id}")
+                    return record_id
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"[{self.name}] ❌ 保存对话失败: {e}", exc_info=True)
+            return None
     
     def get_history_text(self) -> str:
         """获取格式化的对话历史文本
@@ -246,6 +372,9 @@ class SmartChatAgent(BaseAgent):
                     self.add_to_history('user', user_message)
                     self.add_to_history('assistant', accumulated)
                 
+                # 自动保存对话
+                await self.save_conversation(use_knowledge=use_knowledge)
+                
                 self.logger.info(f"[{self.name}] 流式对话完成，回复长度={len(accumulated)}")
             
             return stream_chat()
@@ -257,6 +386,9 @@ class SmartChatAgent(BaseAgent):
             if use_history:
                 self.add_to_history('user', user_message)
                 self.add_to_history('assistant', response)
+            
+            # 自动保存对话
+            await self.save_conversation(use_knowledge=use_knowledge)
             
             self.logger.info(f"[{self.name}] 对话完成，回复长度={len(response)}")
             return response

@@ -105,7 +105,7 @@ export class AutoSaveService {
   private editingItemId: string | null = null;
   
   // 回调：当 recordId 首次创建时通知外部
-  private onRecordIdCreated?: (recordId: string) => void;
+  private onRecordIdCreatedCallback?: (recordId: string) => void;
   
   constructor(
     appType: AppType,
@@ -119,16 +119,23 @@ export class AutoSaveService {
     this.adapter = adapter;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.currentSessionId = this.generateSessionId();
-    this.onRecordIdCreated = callbacks?.onRecordIdCreated;
+    this.onRecordIdCreatedCallback = callbacks?.onRecordIdCreated;
   }
   
   /**
    * 通知外部 recordId 已创建
    */
   private notifyRecordIdCreated(recordId: string) {
-    if (this.onRecordIdCreated) {
-      this.onRecordIdCreated(recordId);
+    if (this.onRecordIdCreatedCallback) {
+      this.onRecordIdCreatedCallback(recordId);
     }
+  }
+  
+  /**
+   * 设置 recordId 创建回调（公共方法）
+   */
+  onRecordIdCreated(callback: (recordId: string) => void) {
+    this.onRecordIdCreatedCallback = callback;
   }
   
   /**
@@ -197,6 +204,13 @@ export class AutoSaveService {
       clearTimeout(this.longEditTimer);
       this.longEditTimer = null;
     }
+  }
+  
+  /**
+   * 清理服务（stop 的别名）
+   */
+  cleanup() {
+    this.stop();
   }
   
   /**
