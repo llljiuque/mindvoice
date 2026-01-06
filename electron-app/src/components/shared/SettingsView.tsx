@@ -217,6 +217,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
       <div className="settings-view">
         <div className="settings-container">
           <div className="settings-content">
+          {/* 软件名称和版本号 */}
+          <div className="settings-app-info">
+            <div className="settings-app-name">MindVoice 语音桌面助手</div>
+            <div className="settings-app-version">
+              版本 {APP_VERSION.version} 
+              <span className="settings-app-date">({APP_VERSION.releaseDate})</span>
+            </div>
+          </div>
+
           {message && (
             <div className={`settings-message settings-message-${message.type}`}>
               {message.text}
