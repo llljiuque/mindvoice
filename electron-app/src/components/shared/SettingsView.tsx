@@ -233,8 +233,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ apiConnected }) => {
           )}
 
           <div className="settings-section">
-            <div className="settings-section-header">
-              <h2 className="section-title">音频源</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <h2 className="section-title" style={{ marginBottom: 0 }}>音频源</h2>
               <button
                 className="settings-btn-icon settings-btn-refresh-icon"
                 onClick={() => loadDevices(true)}
