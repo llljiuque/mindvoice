@@ -62,8 +62,26 @@ check_command() {
 check_environment() {
     log_info "检查构建环境..."
     
+    # 检测 Python 命令（Windows 上可能是 python，Linux/Mac 上是 python3）
+    local python_cmd="python3"
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        if command -v python &> /dev/null; then
+            python_cmd="python"
+        elif command -v python3 &> /dev/null; then
+            python_cmd="python3"
+        else
+            log_error "未找到 Python，请先安装 Python 3.9+"
+            exit 1
+        fi
+    else
+        if ! command -v python3 &> /dev/null; then
+            log_error "未找到 python3，请先安装 Python 3.9+"
+            exit 1
+        fi
+    fi
+    
     # 检查必要命令
-    local required_commands=("python3" "node" "npm")
+    local required_commands=("node" "npm")
     for cmd in "${required_commands[@]}"; do
         if ! check_command "$cmd"; then
             log_error "缺少必要命令: $cmd"
@@ -72,8 +90,8 @@ check_environment() {
     done
     
     # 检查 Python 版本
-    local python_version=$(python3 --version | awk '{print $2}')
-    log_info "Python 版本: $python_version"
+    local python_version=$($python_cmd --version 2>&1 | awk '{print $2}')
+    log_info "Python 版本: $python_version (使用命令: $python_cmd)"
     
     # 检查 Node.js 版本
     local node_version=$(node --version)
@@ -81,16 +99,18 @@ check_environment() {
     
     # 检查 venv
     if [ ! -d "$PROJECT_ROOT/venv" ]; then
-        log_error "Python 虚拟环境不存在，请先运行: python3 -m venv venv"
+        log_error "Python 虚拟环境不存在，请先运行: $python_cmd -m venv venv"
         exit 1
     fi
     
     # 检查 Windows 构建工具（如果在 Windows 上）
     if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
         log_info "检测到 Windows 环境"
-        # Windows 上可能需要额外的工具
+        # 保存 Python 命令供后续使用
+        export PYTHON_CMD="$python_cmd"
     else
         log_warning "当前不在 Windows 环境，构建 Windows 应用可能需要 Wine 或交叉编译"
+        export PYTHON_CMD="$python_cmd"
     fi
     
     log_success "环境检查通过"
@@ -135,7 +155,211 @@ build_python_backend() {
     fi
     
     cd "$PROJECT_ROOT"
-    source venv/bin/activate
+    
+    # Windows 上使用不同的激活方式
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        # Windows Git Bash: 使用正斜杠，Git Bash 会自动转换
+        if [ -f "venv/Scripts/activate" ]; then
+            source venv/Scripts/activate
+        elif [ -f "venv/bin/activate" ]; then
+            source venv/bin/activate
+        else
+            log_error "无法找到虚拟环境激活脚本"
+            exit 1
+        fi
+    else
+        # Linux/Mac: 使用 bin/activate
+        source venv/bin/activate
+    fi
+    
+    # 检查并安装依赖（Python 3.14 兼容性处理）
+    log_info "检查 Python 依赖..."
+    python_version_major=$(python -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo "0")
+    python_version_minor=$(python -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+    
+    # 如果是 Python 3.14+，需要特殊处理 numpy
+    local need_numpy_fix=0
+    if [ "$python_version_major" -eq 3 ] && [ "$python_version_minor" -ge 14 ]; then
+        log_info "检测到 Python 3.14+，处理 numpy 兼容性..."
+        need_numpy_fix=1
+        
+        # 强制使用预编译包安装最新版本的 numpy（避免编译错误）
+        log_info "安装 numpy（使用预编译包，避免编译错误）..."
+        if pip install --only-binary :all: numpy --upgrade >/dev/null 2>&1; then
+            log_success "numpy 已安装到兼容版本（预编译包）"
+        else
+            log_warning "预编译包安装失败，尝试普通安装（可能需要编译）..."
+            if pip install numpy --upgrade >/dev/null 2>&1; then
+                log_success "numpy 已安装"
+            else
+                log_error "numpy 安装失败"
+                log_error "请手动运行: pip install --only-binary :all: numpy --upgrade"
+                log_error "或使用: pip install numpy --upgrade"
+                deactivate
+                exit 1
+            fi
+        fi
+    fi
+    
+    # 检查依赖是否已安装
+    if ! python -c "import numpy, fastapi, litellm" 2>/dev/null; then
+        log_info "安装项目依赖..."
+        
+        # 如果是 Python 3.14+ 且 numpy 已安装，创建临时 requirements 文件（排除 numpy）
+        if [ "$need_numpy_fix" -eq 1 ] && python -c "import numpy" 2>/dev/null; then
+            log_info "Python 3.14+ 检测到，排除 numpy 避免重新编译..."
+            # 创建临时 requirements 文件（排除 numpy 行）
+            local temp_requirements
+            if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+                temp_requirements="$PROJECT_ROOT/build/temp_requirements.txt"
+            else
+                temp_requirements="/tmp/temp_requirements.txt"
+            fi
+            mkdir -p "$(dirname "$temp_requirements")"
+            
+            # 过滤掉 numpy 行（包括注释行）
+            grep -v "^numpy" "$PROJECT_ROOT/requirements.txt" | grep -v "^#.*numpy" > "$temp_requirements" 2>/dev/null || {
+                # 如果过滤失败，使用原文件但跳过 numpy
+                cp "$PROJECT_ROOT/requirements.txt" "$temp_requirements"
+            }
+            
+            # 尝试安装依赖，如果网络失败则使用国内镜像
+            log_info "尝试安装依赖（这可能需要几分钟）..."
+            local pip_output_file
+            if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+                pip_output_file="$PROJECT_ROOT/build/pip_install.log"
+            else
+                pip_output_file="/tmp/pip_install.log"
+            fi
+            mkdir -p "$(dirname "$pip_output_file")"
+            
+            # 实时显示输出并保存到文件
+            if pip install -r "$temp_requirements" 2>&1 | tee "$pip_output_file"; then
+                log_success "依赖安装完成"
+                rm -f "$pip_output_file"
+            elif grep -q "ProxyError\|TimeoutError\|Could not find a version" "$pip_output_file" 2>/dev/null; then
+                log_warning "检测到网络问题，尝试使用国内镜像..."
+                if pip install -r "$temp_requirements" -i https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 | tee "$pip_output_file"; then
+                    log_success "依赖安装完成（使用国内镜像）"
+                    rm -f "$pip_output_file"
+                else
+                    log_error "依赖安装失败（网络问题）"
+                    log_info "建议："
+                    log_info "  1. 检查网络连接和代理设置"
+                    log_info "  2. 手动运行: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple"
+                    log_info "  3. 或配置代理: pip install --proxy http://proxy:port -r requirements.txt"
+                    log_info "详细日志: $pip_output_file"
+                    rm -f "$temp_requirements"
+                    deactivate
+                    exit 1
+                fi
+            elif grep -q "ResolutionImpossible\|no matching distributions\|onnxruntime" "$pip_output_file" 2>/dev/null; then
+                log_warning "检测到依赖冲突（可能是 Python 3.14 兼容性问题）..."
+                log_info "尝试使用更宽松的依赖解析..."
+                if pip install -r "$temp_requirements" --no-deps 2>&1 | tee "$pip_output_file"; then
+                    log_warning "已安装主要依赖（跳过依赖检查）"
+                    log_info "尝试安装依赖的依赖（可能部分失败）..."
+                    pip install -r "$temp_requirements" 2>&1 | tee -a "$pip_output_file" || {
+                        log_warning "部分依赖安装失败，但主要依赖已安装"
+                        log_info "这可能是 Python 3.14 的兼容性问题，某些包可能不支持"
+                    }
+                    log_success "依赖安装完成（部分依赖可能缺失）"
+                    rm -f "$pip_output_file"
+                else
+                    log_error "依赖安装失败（依赖冲突）"
+                    log_info "这是 Python 3.14 的兼容性问题，某些包（如 onnxruntime）可能不支持"
+                    log_info "建议："
+                    log_info "  1. 使用 Python 3.11 或 3.12（推荐）"
+                    log_info "  2. 或手动安装: pip install -r requirements.txt --no-deps"
+                    log_info "  3. 然后单独安装可用的依赖"
+                    log_info "详细日志: $pip_output_file"
+                    rm -f "$temp_requirements"
+                    deactivate
+                    exit 1
+                fi
+            else
+                log_error "依赖安装失败，请检查 requirements.txt"
+                tail -20 "$pip_output_file" 2>/dev/null || echo "查看详细日志: $pip_output_file"
+                rm -f "$temp_requirements" "$pip_output_file"
+                deactivate
+                exit 1
+            fi
+            
+            # 清理临时文件
+            rm -f "$temp_requirements"
+            log_success "依赖安装完成（numpy 已单独安装）"
+        else
+            # 正常安装所有依赖
+            log_info "尝试安装依赖（这可能需要几分钟）..."
+            local pip_output_file
+            if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+                pip_output_file="$PROJECT_ROOT/build/pip_install.log"
+            else
+                pip_output_file="/tmp/pip_install.log"
+            fi
+            mkdir -p "$(dirname "$pip_output_file")"
+            
+            # 实时显示输出并保存到文件
+            if pip install -r requirements.txt 2>&1 | tee "$pip_output_file"; then
+                log_success "依赖安装完成"
+                rm -f "$pip_output_file"
+            elif grep -q "ProxyError\|TimeoutError\|Could not find a version" "$pip_output_file" 2>/dev/null; then
+                log_warning "检测到网络问题，尝试使用国内镜像..."
+                if pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 | tee "$pip_output_file"; then
+                    log_success "依赖安装完成（使用国内镜像）"
+                    rm -f "$pip_output_file"
+                else
+                    log_error "依赖安装失败（网络问题）"
+                    log_info "建议："
+                    log_info "  1. 检查网络连接和代理设置"
+                    log_info "  2. 手动运行: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple"
+                    log_info "  3. 或配置代理: pip install --proxy http://proxy:port -r requirements.txt"
+                    log_info "详细日志: $pip_output_file"
+                    if [ "$need_numpy_fix" -eq 1 ]; then
+                        log_info "提示：如果是 numpy 编译错误，请先运行: pip install --only-binary :all: numpy --upgrade"
+                    fi
+                    deactivate
+                    exit 1
+                fi
+            elif grep -q "ResolutionImpossible\|no matching distributions" "$pip_output_file" 2>/dev/null; then
+                log_warning "检测到依赖冲突（可能是 Python 3.14 兼容性问题），尝试使用宽松模式..."
+                # 尝试使用 --no-deps 安装主要依赖，然后手动处理冲突
+                log_info "尝试逐个安装依赖（跳过有问题的包）..."
+                local failed_packages=()
+                while IFS= read -r line; do
+                    # 跳过空行和注释
+                    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+                    # 提取包名（去除版本要求）
+                    local pkg_name=$(echo "$line" | sed 's/[>=<!=].*//' | xargs)
+                    if [ -n "$pkg_name" ]; then
+                        log_info "安装: $pkg_name"
+                        if ! pip install "$line" -i https://pypi.tuna.tsinghua.edu.cn/simple 2>&1 | tee -a "$pip_output_file"; then
+                            log_warning "跳过有问题的包: $pkg_name"
+                            failed_packages+=("$pkg_name")
+                        fi
+                    fi
+                done < requirements.txt
+                
+                if [ ${#failed_packages[@]} -gt 0 ]; then
+                    log_warning "以下包安装失败（可能是 Python 3.14 兼容性问题）: ${failed_packages[*]}"
+                    log_info "这些包可能不是必需的，构建可能会继续"
+                fi
+                log_success "依赖安装完成（部分包可能已跳过）"
+                rm -f "$pip_output_file"
+            else
+                log_error "依赖安装失败，请检查 requirements.txt"
+                tail -20 "$pip_output_file" 2>/dev/null || echo "查看详细日志: $pip_output_file"
+                if [ "$need_numpy_fix" -eq 1 ]; then
+                    log_info "提示：如果是 numpy 编译错误，请先运行: pip install --only-binary :all: numpy --upgrade"
+                fi
+                rm -f "$pip_output_file"
+                deactivate
+                exit 1
+            fi
+        fi
+    else
+        log_success "依赖检查通过"
+    fi
     
     # 安装 PyInstaller
     log_info "检查 PyInstaller..."
@@ -275,6 +499,17 @@ package_application() {
     log_info "提示：如果 Wine 执行失败，这是 macOS 上的已知问题，建议在 Windows 上构建"
     echo
     
+    # 设置日志文件路径（跨平台兼容）
+    local log_file
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+        # Windows: 使用项目目录下的临时目录
+        log_file="$PROJECT_ROOT/build/electron-builder-x64.log"
+        mkdir -p "$PROJECT_ROOT/build"
+    else
+        # Linux/Mac: 使用 /tmp
+        log_file="/tmp/electron-builder-x64.log"
+    fi
+    
     # 设置超时（30分钟）并显示进度
     local build_result=0
     if command -v timeout &> /dev/null; then
@@ -282,15 +517,15 @@ package_application() {
             --win \
             --x64 \
             --config "$BUILD_DIR/config/electron-builder.json" \
-            --publish never 2>&1 | tee /tmp/electron-builder-x64.log || {
+            --publish never 2>&1 | tee "$log_file" || {
             build_result=$?
             if [ $build_result -eq 124 ]; then
                 log_error "Windows x64 构建超时（30分钟）"
             else
                 log_error "Windows x64 构建失败（退出码: $build_result）"
-                log_info "查看详细日志: /tmp/electron-builder-x64.log"
+                log_info "查看详细日志: $log_file"
                 # 检查是否是 Wine 错误
-                if grep -q "wine\|Wine\|WINEDEBUG" /tmp/electron-builder-x64.log 2>/dev/null; then
+                if grep -q "wine\|Wine\|WINEDEBUG" "$log_file" 2>/dev/null; then
                     log_warning "检测到 Wine 相关错误，这是 macOS 上构建 Windows 应用的已知问题"
                     log_warning "建议：在 Windows 系统上运行此脚本，或使用 Docker/虚拟机"
                 fi
@@ -298,17 +533,17 @@ package_application() {
             exit 1
         }
     else
-        # macOS 没有 timeout 命令，使用 gtimeout（需要 brew install coreutils）或直接运行
+        # macOS/Windows 没有 timeout 命令，直接运行
         npx electron-builder \
             --win \
             --x64 \
             --config "$BUILD_DIR/config/electron-builder.json" \
-            --publish never 2>&1 | tee /tmp/electron-builder-x64.log || {
+            --publish never 2>&1 | tee "$log_file" || {
             build_result=$?
             log_error "Windows x64 构建失败（退出码: $build_result）"
-            log_info "查看详细日志: /tmp/electron-builder-x64.log"
+            log_info "查看详细日志: $log_file"
             # 检查是否是 Wine 错误
-            if grep -q "wine\|Wine\|WINEDEBUG" /tmp/electron-builder-x64.log 2>/dev/null; then
+            if grep -q "wine\|Wine\|WINEDEBUG" "$log_file" 2>/dev/null; then
                 log_warning "检测到 Wine 相关错误，这是 macOS 上构建 Windows 应用的已知问题"
                 log_warning "建议：在 Windows 系统上运行此脚本，或使用 Docker/虚拟机"
             fi
