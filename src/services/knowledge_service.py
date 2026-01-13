@@ -126,6 +126,16 @@ class KnowledgeService:
         os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
         os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
         
+        # 配置 HuggingFace 镜像源（如果未设置）
+        # 使用国内镜像加速下载
+        if not os.getenv('HF_ENDPOINT'):
+            os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+            logger.info("[KnowledgeService] 已设置 HuggingFace 镜像源: https://hf-mirror.com")
+        
+        # 如果设置了代理，也配置给 huggingface_hub
+        if os.getenv('HTTP_PROXY') or os.getenv('HTTPS_PROXY'):
+            logger.debug(f"[KnowledgeService] 检测到代理设置: HTTP_PROXY={os.getenv('HTTP_PROXY')}, HTTPS_PROXY={os.getenv('HTTPS_PROXY')}")
+        
         # 临时重定向 stderr 到 devnull（避免 tqdm 访问失败）
         original_stderr = sys.stderr
         try:

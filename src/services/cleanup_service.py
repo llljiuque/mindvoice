@@ -82,9 +82,14 @@ class CleanupService:
         if self._task:
             self._task.cancel()
             try:
-                await self._task
+                # 设置超时，确保不会无限等待
+                await asyncio.wait_for(self._task, timeout=1.0)
+            except asyncio.TimeoutError:
+                logger.warning("[Cleanup] 清理任务取消超时，强制停止")
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.error(f"[Cleanup] 停止清理服务时出错: {e}")
         logger.info("[Cleanup] 自动清理服务已停止")
     
     async def _cleanup_loop(self):
