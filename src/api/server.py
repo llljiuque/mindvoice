@@ -9,6 +9,7 @@ import os
 import json
 import base64
 import uuid
+import signal
 from datetime import datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +34,7 @@ from src.services.knowledge_service import KnowledgeService
 from src.services.export_service import MarkdownExportService, HtmlExportService
 from src.services.cleanup_service import CleanupService
 from src.services.consumption_service import ConsumptionService
+from src.services.tts_service import TTSService
 from src.utils.audio_recorder import SoundDeviceRecorder
 from src.agents import SummaryAgent, SmartChatAgent
 from src.agents.translation_agent import TranslationAgent
@@ -46,48 +48,106 @@ logger = get_logger("API")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    setup_logging()
-    setup_voice_service()
-    setup_llm_service()
-    setup_cleanup_service()
-    setup_membership_services()
-    setup_user_service()
-    setup_tag_service()
+    global voice_service, llm_service, tts_service, knowledge_service, cleanup_service, recorder
     
-    # 在异步上下文中启动知识库模型的后台加载
-    global knowledge_service
-    if knowledge_service and hasattr(knowledge_service, 'start_background_load'):
-        load_task = knowledge_service.start_background_load()
-        if load_task:
-            # start_background_load() 已经返回一个正在运行的 Task，不需要再包装
-            # 只需要保留引用，防止被垃圾回收
-            logger.info("[API] 已在后台启动 Embedding 模型加载任务")
-    
-    # 启动清理服务
-    global cleanup_service
-    if cleanup_service:
-        await cleanup_service.start()
+    # 快速初始化，避免阻塞服务器启动
+    try:
+        setup_logging()
+        logger.info("[API] 日志系统已初始化")
+        
+        # 初始化服务（快速执行，不阻塞）
+        setup_voice_service()
+        logger.info("[API] 语音服务已初始化")
+        
+        setup_knowledge_service()  # 独立初始化知识库服务
+        logger.info("[API] 知识库服务已初始化")
+        
+        setup_llm_service()
+        logger.info("[API] LLM服务已初始化")
+        
+        setup_tts_service()
+        logger.info("[API] TTS服务已初始化")
+        
+        setup_cleanup_service()
+        logger.info("[API] 清理服务已初始化")
+        
+        setup_membership_services()
+        logger.info("[API] 会员服务已初始化")
+        
+        setup_user_service()
+        logger.info("[API] 用户服务已初始化")
+        
+        setup_tag_service()
+        logger.info("[API] 标签服务已初始化")
+        
+        # 在异步上下文中启动知识库模型的后台加载（不阻塞）
+        if knowledge_service and hasattr(knowledge_service, 'start_background_load'):
+            load_task = knowledge_service.start_background_load()
+            if load_task:
+                logger.info("[API] 已在后台启动 Embedding 模型加载任务")
+        
+        # 启动清理服务（异步，不阻塞）
+        if cleanup_service:
+            try:
+                await cleanup_service.start()
+                logger.info("[API] 清理服务已启动")
+            except Exception as e:
+                logger.error(f"[API] 启动清理服务失败: {e}")
+        
+        logger.info("[API] 所有服务初始化完成，服务器准备就绪")
+    except Exception as e:
+        logger.error(f"[API] 服务初始化失败: {e}", exc_info=True)
+        # 即使初始化失败，也继续启动服务器，避免完全无法启动
     
     yield
-    
-    global voice_service, llm_service, recorder
     logger.info("[API] 正在关闭服务...")
     
-    # 停止清理服务
-    if cleanup_service:
-        await cleanup_service.stop()
-    
-    if voice_service:
-        try:
-            voice_service.cleanup()
-        except Exception as e:
-            logger.error(f"清理语音服务失败: {e}")
-    
-    if recorder:
-        try:
-            recorder.cleanup()
-        except Exception as e:
-            logger.error(f"清理录音器失败: {e}")
+    # 使用超时机制，确保清理操作不会阻塞太久
+    try:
+        # 停止清理服务（设置超时）
+        if cleanup_service:
+            try:
+                await asyncio.wait_for(cleanup_service.stop(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("[API] 清理服务停止超时，强制取消")
+            except Exception as e:
+                logger.error(f"停止清理服务失败: {e}")
+        
+        # 清理知识库服务（同步操作，快速执行）
+        if knowledge_service:
+            try:
+                if hasattr(knowledge_service, 'cleanup'):
+                    knowledge_service.cleanup()
+            except Exception as e:
+                logger.error(f"清理知识库服务失败: {e}")
+        
+        # 清理 TTS 服务（同步操作，快速执行）
+        if tts_service:
+            try:
+                if hasattr(tts_service, 'cleanup'):
+                    tts_service.cleanup()
+                elif hasattr(tts_service, 'tts_provider') and tts_service.tts_provider:
+                    if hasattr(tts_service.tts_provider, 'cleanup'):
+                        tts_service.tts_provider.cleanup()
+            except Exception as e:
+                logger.error(f"清理 TTS 服务失败: {e}")
+        
+        # 清理语音服务（同步操作，快速执行）
+        if voice_service:
+            try:
+                voice_service.cleanup()
+            except Exception as e:
+                logger.error(f"清理语音服务失败: {e}")
+        
+        # 清理录音器（同步操作，快速执行）
+        if recorder:
+            try:
+                recorder.cleanup()
+            except Exception as e:
+                logger.error(f"清理录音器失败: {e}")
+        
+    except Exception as e:
+        logger.error(f"[API] 关闭服务时发生错误: {e}", exc_info=True)
     
     logger.info("[API] 服务已关闭")
 
@@ -121,6 +181,7 @@ app.include_router(tag_router)
 # 全局服务实例
 voice_service: Optional[VoiceService] = None
 llm_service: Optional[LLMService] = None
+tts_service: Optional[TTSService] = None
 knowledge_service: Optional[KnowledgeService] = None
 consumption_service: Optional[ConsumptionService] = None
 summary_agent: Optional[SummaryAgent] = None
@@ -494,9 +555,44 @@ def setup_tag_service():
         # 不抛出异常，允许应用继续运行
 
 
+def setup_knowledge_service():
+    """初始化知识库服务（独立于LLM服务）"""
+    global knowledge_service, config
+    
+    logger.info("[API] 初始化知识库服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化知识库服务（延迟加载模式，不阻塞启动）
+        try:
+            # 从配置读取知识库目录
+            data_dir = Path(config.get('storage.data_dir')).expanduser()
+            knowledge_relative = Path(config.get('storage.knowledge'))
+            
+            knowledge_service = KnowledgeService(
+                data_dir=data_dir,
+                knowledge_relative_path=knowledge_relative,
+                embedding_model=config.get('knowledge.embedding_model', 'all-MiniLM-L6-v2'),
+                lazy_load=config.get('knowledge.lazy_load', True)
+            )
+            logger.info(f"[API] 知识库服务初始化成功（延迟加载模式，路径: {data_dir / knowledge_relative}）")
+        except ImportError as e:
+            logger.warning(f"[API] 知识库服务初始化失败（依赖未安装）: {e}")
+            logger.warning("[API] 如需使用知识库功能，请安装: pip install sentence-transformers chromadb")
+            knowledge_service = None
+        except Exception as e:
+            logger.error(f"[API] 知识库服务初始化失败: {e}", exc_info=True)
+            knowledge_service = None
+    except Exception as e:
+        logger.error(f"[API] 初始化知识库服务失败: {e}", exc_info=True)
+        knowledge_service = None
+
+
 def setup_llm_service():
-    """初始化 LLM 服务和知识库服务（知识库延迟加载）"""
-    global llm_service, knowledge_service, summary_agent, smart_chat_agent, config
+    """初始化 LLM 服务"""
+    global llm_service, summary_agent, smart_chat_agent, config
     
     logger.info("[API] 初始化 LLM 服务...")
     
@@ -510,25 +606,8 @@ def setup_llm_service():
         if llm_service.is_available():
             logger.info("[API] LLM 服务初始化完成")
             
-            # 初始化知识库服务（延迟加载模式，不阻塞启动）
-            try:
-                # 从配置读取知识库目录
-                data_dir = Path(config.get('storage.data_dir')).expanduser()
-                knowledge_relative = Path(config.get('storage.knowledge'))
-                
-                knowledge_service = KnowledgeService(
-                    data_dir=data_dir,
-                    knowledge_relative_path=knowledge_relative,
-                    embedding_model=config.get('knowledge.embedding_model', 'all-MiniLM-L6-v2'),
-                    lazy_load=config.get('knowledge.lazy_load', True)
-                )
-                logger.info(f"[API] 知识库服务初始化成功（延迟加载模式，路径: {data_dir / knowledge_relative}）")
-            except Exception as e:
-                logger.warning(f"[API] 知识库服务初始化失败（可能是依赖未安装）: {e}")
-                knowledge_service = None
-            
             # 使用 global 声明以修改全局变量
-            global summary_agent, smart_chat_agent, translation_agent
+            global summary_agent, smart_chat_agent, translation_agent, knowledge_service
             
             # 初始化 SummaryAgent
             summary_agent = SummaryAgent(llm_service)
@@ -537,7 +616,7 @@ def setup_llm_service():
             # 初始化 SmartChatAgent（使用 voice_service 的 storage_provider）
             smart_chat_agent = SmartChatAgent(
                 llm_service=llm_service,
-                knowledge_service=knowledge_service,
+                knowledge_service=knowledge_service,  # 使用已初始化的知识库服务
                 storage_provider=voice_service.storage_provider if voice_service else None
             )
             logger.info(f"[API] {smart_chat_agent.name} 初始化完成")
@@ -546,19 +625,35 @@ def setup_llm_service():
             translation_agent = TranslationAgent(llm_service)
             logger.info(f"[API] {translation_agent.name} 初始化完成")
         else:
-            logger.warning("[API] LLM 服务不可用，请检查配置")
-            summary_agent = None
-            smart_chat_agent = None
-            translation_agent = None
-            knowledge_service = None
-            
+            logger.warning("[API] LLM 服务不可用，相关功能将受限")
     except Exception as e:
-        logger.error(f"[API] LLM 服务初始化失败: {e}", exc_info=True)
+        logger.error(f"[API] 初始化 LLM 服务失败: {e}", exc_info=True)
         llm_service = None
         summary_agent = None
         smart_chat_agent = None
         translation_agent = None
-        knowledge_service = None
+
+
+def setup_tts_service():
+    """初始化 TTS 服务"""
+    global tts_service, config
+    
+    logger.info("[API] 初始化 TTS 服务...")
+    
+    try:
+        if config is None:
+            config = Config()
+        
+        # 初始化 TTS 服务
+        tts_service = TTSService(config)
+        
+        if tts_service.is_available():
+            logger.info("[API] TTS 服务初始化完成")
+        else:
+            logger.warning("[API] TTS 服务不可用，语音合成功能将受限")
+    except Exception as e:
+        logger.error(f"[API] 初始化 TTS 服务失败: {e}", exc_info=True)
+        tts_service = None
 
 
 def setup_logging():
@@ -2774,8 +2869,17 @@ async def upload_knowledge_file(request: KnowledgeUploadRequest):
     
     支持的文件类型：.md, .txt
     """
-    if not knowledge_service or not knowledge_service.is_available():
-        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    if not knowledge_service:
+        raise HTTPException(
+            status_code=503, 
+            detail="知识库服务未初始化，请检查依赖是否已安装（sentence-transformers, chromadb）"
+        )
+    
+    if not knowledge_service.is_available():
+        raise HTTPException(
+            status_code=503, 
+            detail="知识库服务不可用，请检查服务状态"
+        )
     
     try:
         result = await knowledge_service.upload_file(
@@ -2814,8 +2918,17 @@ async def search_knowledge(request: KnowledgeSearchRequest):
 @app.get("/api/knowledge/files")
 async def list_knowledge_files():
     """列出所有知识库文件"""
-    if not knowledge_service or not knowledge_service.is_available():
-        raise HTTPException(status_code=503, detail="知识库服务不可用")
+    if not knowledge_service:
+        raise HTTPException(
+            status_code=503, 
+            detail="知识库服务未初始化，请检查依赖是否已安装（sentence-transformers, chromadb）"
+        )
+    
+    if not knowledge_service.is_available():
+        raise HTTPException(
+            status_code=503, 
+            detail="知识库服务不可用，请检查服务状态"
+        )
     
     try:
         files = await knowledge_service.list_files()
@@ -2857,6 +2970,178 @@ async def get_knowledge_file_content(file_id: str):
     except Exception as e:
         logger.error(f"获取文件内容失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
+
+
+# ==================== TTS API ====================
+
+class TTSRequest(BaseModel):
+    """TTS 合成请求"""
+    text: str = Field(..., min_length=1, max_length=5000, description="要合成的文本")
+    language: str = Field(default="zh-CN", description="语言代码")
+    voice: Optional[str] = Field(default=None, description="音色ID")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="语速（0.5-2.0）")
+    ref_audio: Optional[str] = Field(default=None, description="参考音频（Base64编码，用于音色克隆）")
+
+
+class VoicesResponse(BaseModel):
+    """音色列表响应"""
+    success: bool
+    voices: list[Dict[str, Any]]
+
+
+@app.post("/api/tts/synthesize")
+async def synthesize_tts(request: TTSRequest):
+    """合成语音
+    
+    接收文本并返回 WAV 格式的音频文件
+    """
+    if not tts_service or not tts_service.is_available():
+        raise HTTPException(status_code=503, detail="TTS 服务不可用")
+    
+    try:
+        # 准备额外参数
+        kwargs = {}
+        if request.ref_audio:
+            kwargs['ref_audio'] = request.ref_audio
+        
+        # 调用 TTS 服务合成语音
+        audio_data = await tts_service.synthesize(
+            text=request.text,
+            language=request.language,
+            voice=request.voice,
+            speed=request.speed,
+            **kwargs
+        )
+        
+        # 返回音频文件
+        return Response(
+            content=audio_data,
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "attachment; filename=tts_output.wav"
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"[TTS API] 语音合成失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"语音合成失败: {str(e)}")
+
+
+@app.post("/api/tts/stream")
+async def synthesize_tts_stream(request: TTSRequest):
+    """流式合成语音
+    
+    逐步返回音频数据块，适用于长文本
+    """
+    if not tts_service or not tts_service.is_available():
+        raise HTTPException(status_code=503, detail="TTS 服务不可用")
+    
+    async def generate():
+        try:
+            # 准备额外参数
+            kwargs = {}
+            if request.ref_audio:
+                kwargs['ref_audio'] = request.ref_audio
+            
+            # 流式生成音频
+            async for chunk in tts_service.synthesize_stream(
+                text=request.text,
+                language=request.language,
+                voice=request.voice,
+                speed=request.speed,
+                **kwargs
+            ):
+                yield chunk
+        except Exception as e:
+            logger.error(f"[TTS API] 流式语音合成失败: {e}", exc_info=True)
+            raise
+    
+    return StreamingResponse(
+        generate(),
+        media_type="audio/wav"
+    )
+
+
+@app.get("/api/tts/providers")
+async def list_tts_providers():
+    """获取可用的TTS提供商列表
+    
+    返回:
+        {
+            "success": true,
+            "providers": [
+                {
+                    "name": "cosyvoice3",
+                    "display_name": "Fun-CosyVoice3",
+                    "description": "基于ModelScope的Fun-CosyVoice3模型",
+                    "supported_languages": ["zh-CN", "en-US", "ja-JP", "ko-KR"]
+                }
+            ],
+            "current": "cosyvoice3"
+        }
+    """
+    try:
+        from ..providers.tts import list_available_tts_providers, get_tts_provider_class
+        
+        providers = []
+        available_names = list_available_tts_providers()
+        
+        # 获取每个提供商的详细信息
+        for name in available_names:
+            try:
+                provider_class = get_tts_provider_class(name)
+                if provider_class:
+                    # 创建临时实例以获取信息（不初始化）
+                    temp_provider = provider_class()
+                    providers.append({
+                        "name": name,
+                        "display_name": getattr(provider_class, 'DISPLAY_NAME', name),
+                        "description": getattr(provider_class, 'DESCRIPTION', f"{name} TTS provider"),
+                        "supported_languages": temp_provider.supported_languages if hasattr(temp_provider, 'supported_languages') else []
+                    })
+            except Exception as e:
+                logger.warning(f"[TTS API] 获取提供商 {name} 信息失败: {e}")
+                providers.append({
+                    "name": name,
+                    "display_name": name,
+                    "description": f"{name} TTS provider",
+                    "supported_languages": []
+                })
+        
+        current_provider = None
+        if tts_service:
+            current_provider = tts_service.get_provider_name()
+        
+        return {
+            "success": True,
+            "providers": providers,
+            "current": current_provider
+        }
+    except Exception as e:
+        logger.error(f"[TTS API] 获取TTS提供商列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取TTS提供商列表失败: {str(e)}")
+
+
+@app.get("/api/tts/voices", response_model=VoicesResponse)
+async def list_tts_voices(language: Optional[str] = None):
+    """获取可用的音色列表
+    
+    参数:
+        language: 语言代码（可选，过滤特定语言的音色）
+    """
+    if not tts_service or not tts_service.is_available():
+        raise HTTPException(status_code=503, detail="TTS 服务不可用")
+    
+    try:
+        voices = await tts_service.list_voices(language=language)
+        return {
+            "success": True,
+            "voices": voices
+        }
+    except Exception as e:
+        logger.error(f"[TTS API] 获取音色列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取音色列表失败: {str(e)}")
 
 
 # ==================== 轮询 API（替代 WebSocket）====================
@@ -2933,14 +3218,50 @@ async def clear_messages():
 
 def run_server(host: str = "127.0.0.1", port: int = 8765):
     """运行API服务器"""
-    logger.info(f"[API] 启动API服务器: http://{host}:{port}")
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level="info",
-        access_log=True
+    # 先设置基本日志，确保启动信息能被记录
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[logging.StreamHandler(sys.stdout)]
     )
+    
+    logger.info(f"[API] 正在启动API服务器: http://{host}:{port}")
+    
+    # 注册信号处理器，确保能够快速响应SIGTERM
+    def signal_handler(signum, frame):
+        """处理退出信号"""
+        logger.info(f"[API] 收到信号 {signum}，准备关闭服务器...")
+        # uvicorn会自动处理信号，这里只是记录日志
+    
+    # 注册信号处理器（Windows上SIGTERM可能不可用，使用SIGINT）
+    try:
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)
+        if hasattr(signal, 'SIGINT'):
+            signal.signal(signal.SIGINT, signal_handler)
+    except (ValueError, OSError) as e:
+        # Windows上可能无法注册某些信号，忽略错误
+        logger.debug(f"[API] 无法注册信号处理器: {e}")
+    
+    # 配置uvicorn以支持优雅关闭
+    try:
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+            access_log=True,
+            timeout_keep_alive=5,  # 保持连接超时
+            timeout_graceful_shutdown=5,  # 优雅关闭超时（秒）
+        )
+        server = uvicorn.Server(config)
+        logger.info(f"[API] 服务器配置完成，开始监听: http://{host}:{port}")
+        server.run()
+    except Exception as e:
+        logger.error(f"[API] 服务器启动失败: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":

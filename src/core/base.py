@@ -189,3 +189,82 @@ class LLMProvider(ABC):
     def is_available(self) -> bool:
         """检查服务是否可用"""
         pass
+
+
+class TTSProvider(ABC):
+    """TTS 提供商抽象基类"""
+    
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """提供商名称"""
+        pass
+    
+    @property
+    @abstractmethod
+    def supported_languages(self) -> list[str]:
+        """支持的语言列表"""
+        pass
+    
+    @abstractmethod
+    def initialize(self, config: Dict[str, Any]) -> bool:
+        """初始化提供商
+        
+        Args:
+            config: 配置字典
+            
+        Returns:
+            是否初始化成功
+        """
+        pass
+    
+    @abstractmethod
+    async def synthesize(self, text: str, language: str = "zh-CN", voice: Optional[str] = None, 
+                        speed: float = 1.0, **kwargs) -> bytes:
+        """合成语音
+        
+        Args:
+            text: 要合成的文本
+            language: 语言代码（默认: zh-CN）
+            voice: 音色ID（可选，使用默认音色）
+            speed: 语速（默认: 1.0）
+            **kwargs: 其他参数
+            
+        Returns:
+            音频数据（字节流，通常是 WAV 格式）
+        """
+        pass
+    
+    @abstractmethod
+    async def synthesize_stream(self, text: str, language: str = "zh-CN", voice: Optional[str] = None,
+                               speed: float = 1.0, **kwargs) -> AsyncIterator[bytes]:
+        """流式合成语音
+        
+        Args:
+            text: 要合成的文本
+            language: 语言代码（默认: zh-CN）
+            voice: 音色ID（可选，使用默认音色）
+            speed: 语速（默认: 1.0）
+            **kwargs: 其他参数
+            
+        Yields:
+            音频数据块（字节流）
+        """
+        pass
+    
+    @abstractmethod
+    async def list_voices(self, language: Optional[str] = None) -> list[Dict[str, Any]]:
+        """列出可用的音色
+        
+        Args:
+            language: 语言代码（可选，过滤特定语言的音色）
+            
+        Returns:
+            音色列表，每个音色包含 id, name, language, gender 等字段
+        """
+        pass
+    
+    @abstractmethod
+    def is_available(self) -> bool:
+        """检查服务是否可用"""
+        pass
