@@ -11,6 +11,10 @@
 - [用户绑定指南](guides/USER_BINDING_GUIDE.md) - 用户身份管理
 - [图标系统说明](guides/ICON_README.md) - 图标系统导航
 - [图标系统使用指南](guides/ICON_SYSTEM_GUIDE.md) - 图标组件详细文档
+- [TTS快速开始](guides/TTS_QUICK_START.md) - TTS功能快速测试
+- [TTS测试指南](guides/TTS_TESTING.md) - TTS功能测试步骤
+- [TTS环境配置](guides/TTS_ENVIRONMENT_SETUP.md) - 环境配置和问题排查
+- [TTS实施总结](guides/TTS_IMPLEMENTATION_SUMMARY.md) - 功能实现总结
 
 ### 🏗️ [design/](design/) - 技术设计与架构
 - [系统架构](design/SYSTEM_ARCHITECTURE.md) - 整体架构设计
@@ -40,6 +44,7 @@
 - [API 参考](API_REFERENCE.md) - API 接口文档
 - [文档管理指南](DOCUMENT_MANAGEMENT_GUIDE.md) - 文档维护规范
 - [移动端部署](MOBILE_EMBEDDED_DEPLOYMENT.md) - iOS/Android 部署指南
+- [TTS实施总结](guides/TTS_IMPLEMENTATION_SUMMARY.md) - TTS功能实现总结
 
 ## 📖 快速导航
 
@@ -55,6 +60,7 @@
 
 ### 功能模块
 - **语音识别**: 查看[系统架构](design/SYSTEM_ARCHITECTURE.md)
+- **语音合成(TTS)**: 查看[TTS快速开始](guides/TTS_QUICK_START.md) 和 [TTS实施总结](guides/TTS_IMPLEMENTATION_SUMMARY.md)
 - **会员系统**: 查看[会员快速启动](guides/MEMBERSHIP_QUICK_START.md)
 - **智能总结**: 查看[多场景总结指南](guides/MULTI_SCENARIO_SUMMARY_GUIDE.md)
 - **双向翻译**: 查看[双向翻译](design/TRANSLATION_BIDIRECTIONAL.md)
