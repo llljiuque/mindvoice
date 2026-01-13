@@ -18,6 +18,14 @@ litellm>=1.0.0
 # 知识库依赖（SmartChat RAG）
 sentence-transformers>=2.2.2
 chromadb>=0.4.22
+#TTS 依赖
+modelscope>=1.9.0          # ModelScope SDK，用于模型下载和管理
+funasr>=1.0.0              # FunASR 框架，Fun-CosyVoice3 依赖
+torch>=2.0.0               # PyTorch，funasr的必需依赖
+torchaudio>=2.0.0          # PyTorch音频处理库，funasr的必需依赖
+soundfile>=0.12.0          # 音频文件处理
+scipy>=1.10.0              # 音频处理（重采样、信号处理）
+numpy>=1.24.0               # 数值计算（已存在，确保版本兼容）
 
 # VAD 和音频处理依赖
 webrtcvad>=2.0.10

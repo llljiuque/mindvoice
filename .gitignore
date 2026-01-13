@@ -48,6 +48,13 @@ Thumbs.db
 
 # 日志
 *.log
+logs/*.jsonl
+
+# 测试输出文件
+test*.wav
+test_output.wav
+test_stream.wav
+output.wav
 
 # 用户数据
 data/images/*.png
