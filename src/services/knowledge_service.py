@@ -44,6 +44,7 @@ class KnowledgeService:
     
     DEFAULT_CHUNK_SIZE = 500  # 默认分块大小（字符数）
     DEFAULT_CHUNK_OVERLAP = 50  # 默认分块重叠（字符数）
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 最大文件大小：10MB
     
     def __init__(
         self, 
@@ -116,8 +117,30 @@ class KnowledgeService:
             return
         
         logger.info(f"[KnowledgeService] 开始加载 Embedding 模型: {self.embedding_model_name}")
-        self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        logger.info(f"[KnowledgeService] Embedding 模型加载完成")
+        
+        # 禁用进度条（避免在后台线程中访问 stderr 失败）
+        import os
+        import sys
+        
+        # 设置环境变量禁用进度条
+        os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+        os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
+        
+        # 临时重定向 stderr 到 devnull（避免 tqdm 访问失败）
+        original_stderr = sys.stderr
+        try:
+            # 在 Windows 上，使用 devnull 重定向 stderr
+            import io
+            sys.stderr = io.StringIO()
+            
+            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+            logger.info(f"[KnowledgeService] Embedding 模型加载完成")
+        except Exception as e:
+            logger.error(f"[KnowledgeService] Embedding 模型加载失败: {e}", exc_info=True)
+            raise
+        finally:
+            # 恢复 stderr
+            sys.stderr = original_stderr
     
     async def _load_model_async(self):
         """异步加载 Embedding 模型"""
@@ -172,10 +195,21 @@ class KnowledgeService:
         if len(text) <= chunk_size:
             return [text]
         
+        # 确保 chunk_overlap < chunk_size，避免无限循环
+        if chunk_overlap >= chunk_size:
+            chunk_overlap = chunk_size // 4
+        
         chunks = []
         start = 0
+        max_iterations = len(text) // max(1, chunk_size - chunk_overlap) + 100  # 安全上限
+        iteration_count = 0
         
         while start < len(text):
+            iteration_count += 1
+            if iteration_count > max_iterations:
+                logger.error(f"[KnowledgeService] 分块迭代次数超过上限 ({max_iterations})，可能存在无限循环")
+                raise RuntimeError(f"文本分块失败：迭代次数超过上限，可能存在无限循环")
+            
             end = start + chunk_size
             
             # 如果不是最后一块，尝试在句子边界分割
@@ -192,7 +226,14 @@ class KnowledgeService:
                 chunks.append(chunk)
             
             # 下一块的起始位置（考虑重叠）
-            start = end - chunk_overlap if end < len(text) else end
+            next_start = end - chunk_overlap if end < len(text) else end
+            
+            # 防止无限循环：确保 start 必须前进
+            if next_start <= start:
+                logger.warning(f"[KnowledgeService] 检测到 start 未前进 (start={start}, next_start={next_start})，强制前进")
+                next_start = start + max(1, chunk_size - chunk_overlap)
+            
+            start = next_start
         
         return chunks
     
@@ -212,65 +253,114 @@ class KnowledgeService:
         Returns:
             上传结果信息
         """
-        # 确保模型已加载
-        await self.ensure_model_loaded()
-        
-        # 验证文件类型
-        file_ext = Path(filename).suffix.lower()
-        if file_ext not in ['.md', '.txt']:
-            raise ValueError(f"不支持的文件类型: {file_ext}，仅支持 .md 和 .txt")
-        
-        # 生成文件ID
-        file_id = str(uuid.uuid4())
-        
-        # 保存原始文件
-        file_path = self.storage_path / "files" / f"{file_id}_{filename}"
-        file_path.parent.mkdir(exist_ok=True)
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        # 文本分块
-        chunks = self._chunk_text(content)
-        logger.info(f"[KnowledgeService] 文件 {filename} 分成 {len(chunks)} 块")
-        
-        # 生成向量（在线程池中执行，避免阻塞）
-        loop = asyncio.get_event_loop()
-        embeddings = await loop.run_in_executor(
-            None,
-            lambda: self.embedding_model.encode(chunks, show_progress_bar=False).tolist()
-        )
-        
-        # 准备数据
-        chunk_ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
-        chunk_metadata = [
-            {
+        try:
+            # 检查文件大小（防止 MemoryError）
+            content_size = len(content.encode('utf-8'))
+            if content_size > self.MAX_FILE_SIZE:
+                error_msg = f"文件大小超过限制：{content_size / 1024 / 1024:.2f}MB > {self.MAX_FILE_SIZE / 1024 / 1024}MB"
+                logger.error(f"[KnowledgeService] {error_msg}")
+                raise ValueError(error_msg)
+            
+            logger.info(f"[KnowledgeService] 开始上传文件: {filename} (大小: {content_size / 1024:.2f}KB)")
+            
+            # 确保模型已加载
+            await self.ensure_model_loaded()
+            
+            # 验证文件类型
+            file_ext = Path(filename).suffix.lower()
+            if file_ext not in ['.md', '.txt']:
+                raise ValueError(f"不支持的文件类型: {file_ext}，仅支持 .md 和 .txt")
+            
+            # 生成文件ID
+            file_id = str(uuid.uuid4())
+            
+            # 保存原始文件
+            file_path = self.storage_path / "files" / f"{file_id}_{filename}"
+            file_path.parent.mkdir(exist_ok=True)
+            
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                logger.debug(f"[KnowledgeService] 文件已保存到: {file_path}")
+            except Exception as e:
+                logger.error(f"[KnowledgeService] 保存文件失败: {e}", exc_info=True)
+                raise
+            
+            # 文本分块
+            try:
+                chunks = self._chunk_text(content)
+                logger.info(f"[KnowledgeService] 文件 {filename} 分成 {len(chunks)} 块")
+            except Exception as e:
+                logger.error(f"[KnowledgeService] 文本分块失败: {e}", exc_info=True)
+                raise
+            
+            # 生成向量（在线程池中执行，避免阻塞）
+            try:
+                loop = asyncio.get_event_loop()
+                embeddings = await loop.run_in_executor(
+                    None,
+                    lambda: self.embedding_model.encode(chunks, show_progress_bar=False).tolist()
+                )
+                logger.debug(f"[KnowledgeService] 向量生成完成，共 {len(embeddings)} 个向量")
+            except MemoryError as e:
+                error_msg = f"内存不足，无法处理文件 {filename}（大小: {content_size / 1024 / 1024:.2f}MB）"
+                logger.error(f"[KnowledgeService] {error_msg}: {e}", exc_info=True)
+                # 清理已保存的文件
+                if file_path.exists():
+                    file_path.unlink()
+                raise MemoryError(error_msg) from e
+            except Exception as e:
+                logger.error(f"[KnowledgeService] 向量生成失败: {e}", exc_info=True)
+                raise
+            
+            # 准备数据
+            chunk_ids = [f"{file_id}_chunk_{i}" for i in range(len(chunks))]
+            chunk_metadata = [
+                {
+                    'file_id': file_id,
+                    'filename': filename,
+                    'chunk_index': i,
+                    'total_chunks': len(chunks),
+                    **(metadata or {})
+                }
+                for i in range(len(chunks))
+            ]
+            
+            # 存储到向量数据库
+            try:
+                self.collection.add(
+                    ids=chunk_ids,
+                    embeddings=embeddings,
+                    documents=chunks,
+                    metadatas=chunk_metadata
+                )
+                logger.debug(f"[KnowledgeService] 数据已存储到向量数据库")
+            except Exception as e:
+                logger.error(f"[KnowledgeService] 存储到向量数据库失败: {e}", exc_info=True)
+                # 清理已保存的文件
+                if file_path.exists():
+                    file_path.unlink()
+                raise
+            
+            logger.info(f"[KnowledgeService] 文件 {filename} 上传成功，ID: {file_id}")
+            
+            return {
                 'file_id': file_id,
                 'filename': filename,
-                'chunk_index': i,
-                'total_chunks': len(chunks),
-                **(metadata or {})
+                'chunks': len(chunks),
+                'size': len(content),
+                'path': str(file_path)
             }
-            for i in range(len(chunks))
-        ]
-        
-        # 存储到向量数据库
-        self.collection.add(
-            ids=chunk_ids,
-            embeddings=embeddings,
-            documents=chunks,
-            metadatas=chunk_metadata
-        )
-        
-        logger.info(f"[KnowledgeService] 文件 {filename} 上传成功，ID: {file_id}")
-        
-        return {
-            'file_id': file_id,
-            'filename': filename,
-            'chunks': len(chunks),
-            'size': len(content),
-            'path': str(file_path)
-        }
+        except ValueError as e:
+            # 重新抛出 ValueError（如文件大小超限、文件类型不支持）
+            raise
+        except MemoryError as e:
+            # 重新抛出 MemoryError
+            raise
+        except Exception as e:
+            # 其他异常，记录详细日志并重新抛出
+            logger.error(f"[KnowledgeService] 上传文件失败: {filename}, 错误: {e}", exc_info=True)
+            raise
     
     async def search(
         self, 
@@ -398,12 +488,13 @@ class KnowledgeService:
         """检查服务是否可用
         
         Returns:
-            是否可用（包括模型已加载或正在加载）
+            是否可用（依赖已安装且集合已初始化即可，模型会在需要时自动加载）
         """
+        # 在延迟加载模式下，只要依赖安装且集合初始化，就认为服务可用
+        # 模型会在 upload_file/search 时通过 ensure_model_loaded() 自动加载
         return (SENTENCE_TRANSFORMERS_AVAILABLE and 
                 CHROMADB_AVAILABLE and 
-                self.collection is not None and
-                (self.embedding_model is not None or self._model_loading))
+                self.collection is not None)
     
     def start_background_load(self):
         """在后台开始加载模型（非阻塞）

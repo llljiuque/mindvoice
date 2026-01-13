@@ -66,19 +66,41 @@ export const KnowledgeBase: React.FC = () => {
         })
       });
 
+      // 先检查响应状态码
+      if (!response.ok) {
+        // 尝试解析 JSON 错误响应
+        let errorMsg = `上传失败 (HTTP ${response.status})`;
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.detail || errorData.message || errorMsg;
+        } catch (e) {
+          // 如果响应不是 JSON，使用状态文本
+          errorMsg = response.statusText || errorMsg;
+        }
+        setMessage({ text: errorMsg, type: 'error' });
+        console.error('上传文件失败:', errorMsg, response.status);
+        setTimeout(() => setMessage(null), 5000);
+        return;
+      }
+
+      // 响应成功，解析 JSON
       const data = await response.json();
+      
       if (data.success) {
         setMessage({ text: '上传成功！', type: 'success' });
         setTimeout(() => setMessage(null), 3000);
         loadFiles();
       } else {
-        setMessage({ text: '上传失败', type: 'error' });
-        setTimeout(() => setMessage(null), 3000);
+        const errorMsg = data.message || data.detail || '上传失败';
+        setMessage({ text: errorMsg, type: 'error' });
+        console.error('上传文件失败:', errorMsg, data);
+        setTimeout(() => setMessage(null), 5000);
       }
     } catch (error) {
       console.error('上传文件失败:', error);
-      setMessage({ text: '上传文件失败', type: 'error' });
-      setTimeout(() => setMessage(null), 3000);
+      const errorMsg = error instanceof Error ? error.message : '上传文件失败：网络错误或服务器无响应';
+      setMessage({ text: errorMsg, type: 'error' });
+      setTimeout(() => setMessage(null), 5000);
     }
 
     if (fileInputRef.current) {

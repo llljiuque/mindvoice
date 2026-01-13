@@ -153,8 +153,36 @@ function startPythonServer(): Promise<void> {
     let apiArgs: string[] = [];
     
     if (isDev) {
-      // 开发环境：使用 python3 运行 api_server.py
-      apiExecutable = process.platform === 'win32' ? 'python' : 'python3';
+      // 开发环境：优先使用环境变量指定的 Python 路径
+      // 如果没有环境变量，尝试常见的 Python 路径，最后使用默认命令
+      apiExecutable = process.env.PYTHON_EXE || process.env.PYTHON_PATH || '';
+      
+      // 如果环境变量未设置，尝试常见的 Anaconda/Conda Python 路径
+      if (!apiExecutable || !fs.existsSync(apiExecutable)) {
+        const possiblePaths = [
+          'D:\\APP\\anaconda\\envs\\my_env3.9\\python.exe',
+          'C:\\Python39\\python.exe',
+          'C:\\Python310\\python.exe',
+          'C:\\Python311\\python.exe',
+          path.join(process.env.USERPROFILE || process.env.HOME || '', 'anaconda3', 'envs', 'my_env3.9', 'python.exe'),
+          path.join(process.env.USERPROFILE || process.env.HOME || '', 'miniconda3', 'envs', 'my_env3.9', 'python.exe'),
+        ];
+        
+        for (const pythonPath of possiblePaths) {
+          if (pythonPath && fs.existsSync(pythonPath)) {
+            apiExecutable = pythonPath;
+            console.log(`[主进程] 找到 Python: ${apiExecutable}`);
+            break;
+          }
+        }
+      }
+      
+      // 如果还是找不到，使用默认命令（会在 PATH 中查找）
+      if (!apiExecutable || (apiExecutable && !fs.existsSync(apiExecutable))) {
+        apiExecutable = process.platform === 'win32' ? 'python' : 'python3';
+        console.log(`[主进程] 使用默认 Python 命令: ${apiExecutable}`);
+      }
+      
       apiArgs = [path.join(__dirname, '../../api_server.py'), '--host', API_HOST, '--port', String(API_PORT)];
     } else {
       // 生产环境：直接运行打包好的可执行文件
@@ -181,8 +209,9 @@ function startPythonServer(): Promise<void> {
     
     console.log(`[主进程] 启动API服务器: ${apiExecutable} ${apiArgs.join(' ')}`);
     
-    // 检查文件是否存在
-    if (!fs.existsSync(apiExecutable)) {
+    // 检查文件是否存在（仅对完整路径检查，命令会在 PATH 中查找）
+    const isFullPath = apiExecutable.includes(path.sep) || apiExecutable.includes('/') || apiExecutable.includes('\\');
+    if (isFullPath && !fs.existsSync(apiExecutable)) {
       const errorMsg = `API服务器可执行文件不存在: ${apiExecutable}`;
       updateSplashStatus('启动失败', 0, errorMsg);
       reject(new Error(errorMsg));
